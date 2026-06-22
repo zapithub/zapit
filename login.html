@@ -1,0 +1,1236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="description" content="Log in or create your free ZAPIT account — your AI Sales Rep + Viral Content Machine.">
+<meta name="theme-color" content="#6366F1">
+<title>Log In or Sign Up — ZAPIT</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%236366F1'/%3E%3Cpath d='M55 18 L30 56 H47 L43 82 L72 42 H53 Z' fill='white'/%3E%3C/svg%3E">
+
+<style>
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   DESIGN TOKENS — identical system to index.html (landing page)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+:root {
+  --color-primary: #6366F1;
+  --color-primary-hover: #4F46E5;
+  --color-primary-light: #EEF2FF;
+  --color-primary-dark: #3730A3;
+  --color-accent: #8B5CF6;
+  --color-accent-light: #F3EEFF;
+
+  --color-success: #10B981;
+  --color-success-light: #D1FAE5;
+  --color-warning: #F59E0B;
+  --color-warning-light: #FEF3C7;
+  --color-error: #EF4444;
+  --color-error-light: #FEE2E2;
+
+  --color-neutral-900: #111827;
+  --color-neutral-800: #1F2937;
+  --color-neutral-700: #374151;
+  --color-neutral-600: #4B5563;
+  --color-neutral-500: #6B7280;
+  --color-neutral-400: #9CA3AF;
+  --color-neutral-300: #D1D5DB;
+  --color-neutral-200: #E5E7EB;
+  --color-neutral-100: #F3F4F6;
+  --color-neutral-50:  #F9FAFB;
+
+  --color-bg-primary: #FFFFFF;
+  --color-bg-secondary: #F9FAFB;
+  --color-bg-elevated: #FFFFFF;
+  --color-text-primary: #111827;
+  --color-text-secondary: #6B7280;
+  --color-border: #E5E7EB;
+
+  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  --font-size-display: clamp(30px, 5vw, 40px);
+  --line-height-display: clamp(38px, 5.5vw, 48px);
+  --font-size-h1: clamp(24px, 4vw, 32px);
+  --line-height-h1: clamp(30px, 4.5vw, 40px);
+  --font-size-h2: 24px;
+  --line-height-h2: 32px;
+  --font-size-h3: 20px;
+  --line-height-h3: 28px;
+  --font-size-h4: 18px;
+  --line-height-h4: 26px;
+  --font-size-body-lg: 18px;
+  --line-height-body-lg: 28px;
+  --font-size-body: 16px;
+  --line-height-body: 24px;
+  --font-size-body-sm: 14px;
+  --line-height-body-sm: 20px;
+  --font-size-tiny: 12px;
+  --line-height-tiny: 16px;
+
+  --spacing-1: 8px;
+  --spacing-2: 16px;
+  --spacing-3: 24px;
+  --spacing-4: 32px;
+  --spacing-5: 40px;
+  --spacing-6: 48px;
+  --spacing-8: 64px;
+
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 6px rgba(0,0,0,0.07), 0 2px 4px rgba(0,0,0,0.06);
+  --shadow-lg: 0 10px 15px rgba(0,0,0,0.1), 0 4px 6px rgba(0,0,0,0.05);
+  --shadow-xl: 0 20px 25px rgba(0,0,0,0.1), 0 10px 10px rgba(0,0,0,0.04);
+  --shadow-2xl: 0 25px 50px rgba(0,0,0,0.25);
+
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-full: 9999px;
+
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 500ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  --max-width-xl: 1280px;
+  --header-height: 72px;
+  --z-header: 100;
+  --z-modal: 500;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light-mode) {
+    --color-bg-primary: #0B0F19;
+    --color-bg-secondary: #111827;
+    --color-bg-elevated: #1A2235;
+    --color-text-primary: #F9FAFB;
+    --color-text-secondary: #9CA3AF;
+    --color-border: #283044;
+    --color-primary-light: #1E1B4B;
+    --color-accent-light: #2E1F4D;
+    --color-success-light: #06281D;
+    --color-warning-light: #2E2308;
+    --color-error-light: #2E1212;
+  }
+}
+:root.dark-mode {
+  --color-bg-primary: #0B0F19;
+  --color-bg-secondary: #111827;
+  --color-bg-elevated: #1A2235;
+  --color-text-primary: #F9FAFB;
+  --color-text-secondary: #9CA3AF;
+  --color-border: #283044;
+  --color-primary-light: #1E1B4B;
+  --color-accent-light: #2E1F4D;
+  --color-success-light: #06281D;
+  --color-warning-light: #2E2308;
+  --color-error-light: #2E1212;
+}
+:root.light-mode {
+  --color-bg-primary: #FFFFFF;
+  --color-bg-secondary: #F9FAFB;
+  --color-bg-elevated: #FFFFFF;
+  --color-text-primary: #111827;
+  --color-text-secondary: #6B7280;
+  --color-border: #E5E7EB;
+  --color-primary-light: #EEF2FF;
+  --color-accent-light: #F3EEFF;
+  --color-success-light: #D1FAE5;
+  --color-warning-light: #FEF3C7;
+  --color-error-light: #FEE2E2;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   RESET & BASE
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { font-size: 16px; }
+body {
+  font-family: var(--font-family);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-secondary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color var(--transition-base), color var(--transition-base);
+  min-height: 100vh;
+}
+img, svg { display: block; max-width: 100%; }
+a { color: inherit; }
+button, input { font-family: inherit; }
+
+.skip-link { position: absolute; top: -48px; left: 8px; background: var(--color-primary); color: #fff; padding: 10px 16px; border-radius: var(--radius-sm); z-index: 1000; transition: top var(--transition-fast); }
+.skip-link:focus { top: 8px; }
+:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; border-radius: 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+}
+
+h1, .h1 { font-size: var(--font-size-h1); line-height: var(--line-height-h1); font-weight: 700; letter-spacing: -0.01em; }
+h2, .h2 { font-size: var(--font-size-h2); line-height: var(--line-height-h2); font-weight: 600; }
+h3, .h3 { font-size: var(--font-size-h3); line-height: var(--line-height-h3); font-weight: 600; }
+.body-sm { font-size: var(--font-size-body-sm); line-height: var(--line-height-body-sm); }
+.tiny { font-size: var(--font-size-tiny); line-height: var(--line-height-tiny); font-weight: 500; }
+.text-muted { color: var(--color-text-secondary); }
+.text-center { text-align: center; }
+.mb-1 { margin-bottom: var(--spacing-1); }
+.mb-2 { margin-bottom: var(--spacing-2); }
+.mb-3 { margin-bottom: var(--spacing-3); }
+.mt-2 { margin-top: var(--spacing-2); }
+.mt-3 { margin-top: var(--spacing-3); }
+.hidden { display: none !important; }
+
+.gradient-text {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-accent) 100%);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   BUTTONS
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--spacing-1); padding: 12px 24px; border: none; border-radius: var(--radius-sm); font-size: var(--font-size-body); font-weight: 600; text-decoration: none; cursor: pointer; transition: all var(--transition-fast); white-space: nowrap; position: relative; }
+.btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+.btn:active:not(:disabled) { transform: translateY(0); }
+.btn:disabled { opacity: 0.65; cursor: not-allowed; }
+.btn-primary { background: var(--color-primary); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--color-primary-hover); }
+.btn-secondary { background: var(--color-neutral-100); color: var(--color-text-primary); }
+.btn-secondary:hover:not(:disabled) { background: var(--color-neutral-200); }
+.btn-outline { background: transparent; color: var(--color-primary); border: 2px solid var(--color-primary); }
+.btn-outline:hover:not(:disabled) { background: var(--color-primary-light); }
+.btn-block { width: 100%; }
+.btn-lg { padding: 14px 24px; font-size: var(--font-size-body-lg); }
+
+.spinner { width: 18px; height: 18px; border: 2.5px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 700ms linear infinite; }
+.btn-outline .spinner, .btn-secondary .spinner { border-color: rgba(99,102,241,0.3); border-top-color: var(--color-primary); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   NAV
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.nav { height: var(--header-height); display: flex; align-items: center; border-bottom: 1px solid var(--color-border); background: var(--color-bg-primary); }
+.nav-inner { width: 100%; max-width: var(--max-width-xl); margin: 0 auto; padding: 0 var(--spacing-2); display: flex; align-items: center; justify-content: space-between; }
+.logo { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 20px; text-decoration: none; color: var(--color-text-primary); }
+.logo-mark { width: 36px; height: 36px; border-radius: var(--radius-sm); background: linear-gradient(135deg, var(--color-primary), var(--color-accent)); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 18px; flex-shrink: 0; }
+.theme-toggle { width: 40px; height: 40px; border-radius: var(--radius-full); border: 1px solid var(--color-border); background: var(--color-bg-secondary); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-primary); }
+.theme-toggle svg { width: 18px; height: 18px; }
+.icon-moon { display: none; }
+:root.dark-mode .icon-sun { display: none; }
+:root.dark-mode .icon-moon { display: block; }
+.nav-help { font-size: var(--font-size-body-sm); color: var(--color-text-secondary); text-decoration: none; }
+.nav-help:hover { color: var(--color-primary); }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   AUTH SHELL
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.auth-shell {
+  min-height: calc(100vh - var(--header-height));
+  display: grid;
+  grid-template-columns: 1fr 480px;
+  align-items: stretch;
+}
+.auth-brand {
+  background: linear-gradient(160deg, var(--color-primary) 0%, var(--color-accent) 100%);
+  color: #fff;
+  padding: var(--spacing-8) var(--spacing-6);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+.auth-brand::before {
+  content: ''; position: absolute; inset: 0;
+  background-image: radial-gradient(circle at 15% 20%, rgba(255,255,255,0.12) 0%, transparent 45%), radial-gradient(circle at 85% 85%, rgba(255,255,255,0.10) 0%, transparent 45%);
+}
+.auth-brand > * { position: relative; z-index: 1; }
+.auth-brand-content { max-width: 460px; margin: 0 auto; }
+.brand-checklist { list-style: none; display: flex; flex-direction: column; gap: var(--spacing-2); margin: var(--spacing-4) 0; }
+.brand-checklist li { display: flex; gap: 12px; align-items: flex-start; font-size: var(--font-size-body-sm); opacity: 0.95; }
+.brand-checklist svg { flex-shrink: 0; width: 20px; height: 20px; margin-top: 1px; }
+.brand-quote { background: rgba(255,255,255,0.12); border-radius: var(--radius-md); padding: var(--spacing-3); margin-top: var(--spacing-5); backdrop-filter: blur(4px); }
+.brand-quote p { font-size: var(--font-size-body-sm); font-style: italic; opacity: 0.95; }
+.brand-quote .who { margin-top: 10px; font-size: var(--font-size-tiny); font-weight: 700; opacity: 0.85; font-style: normal; }
+
+.auth-panel {
+  background: var(--color-bg-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-5) var(--spacing-3);
+}
+.auth-card { width: 100%; max-width: 400px; }
+
+.referral-badge {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--color-success-light); color: var(--color-success);
+  border-radius: var(--radius-md); padding: 10px 14px;
+  font-size: var(--font-size-body-sm); font-weight: 600;
+  margin-bottom: var(--spacing-3);
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   TABS
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.auth-tabs { display: flex; background: var(--color-bg-secondary); border: 1px solid var(--color-border); border-radius: var(--radius-full); padding: 4px; margin-bottom: var(--spacing-4); }
+.auth-tab { flex: 1; border: none; background: transparent; padding: 11px 16px; border-radius: var(--radius-full); font-size: var(--font-size-body-sm); font-weight: 700; color: var(--color-text-secondary); cursor: pointer; transition: all var(--transition-fast); }
+.auth-tab.active { background: var(--color-primary); color: #fff; box-shadow: var(--shadow-sm); }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   FORMS
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.form-group { margin-bottom: var(--spacing-3); }
+.form-label { display: block; margin-bottom: 6px; font-size: var(--font-size-body-sm); font-weight: 600; color: var(--color-text-primary); }
+.form-input-wrap { position: relative; }
+.form-input {
+  width: 100%; padding: 12px 16px; border: 2px solid var(--color-border); border-radius: var(--radius-sm);
+  font-size: var(--font-size-body); color: var(--color-text-primary); background: var(--color-bg-primary);
+  transition: all var(--transition-fast);
+}
+.form-input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-light); }
+.form-input::placeholder { color: var(--color-neutral-400); }
+.form-input.has-icon { padding-right: 44px; }
+.form-input.is-valid { border-color: var(--color-success); }
+.form-input.is-invalid { border-color: var(--color-error); }
+.input-icon-btn {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 32px; height: 32px; border: none; background: transparent; cursor: pointer;
+  color: var(--color-text-secondary); display: flex; align-items: center; justify-content: center; border-radius: var(--radius-sm);
+}
+.input-icon-btn:hover { color: var(--color-primary); background: var(--color-primary-light); }
+.input-icon-btn svg { width: 18px; height: 18px; }
+.input-status { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 20px; height: 20px; }
+.input-status svg { width: 20px; height: 20px; }
+
+.form-hint { display: block; margin-top: 6px; font-size: var(--font-size-tiny); color: var(--color-text-secondary); }
+.form-error { display: none; align-items: center; gap: 5px; margin-top: 6px; font-size: var(--font-size-tiny); color: var(--color-error); font-weight: 600; }
+.form-error.show { display: flex; animation: shakeX 350ms ease; }
+.form-error svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+@keyframes shakeX { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-4px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-3px); } 80% { transform: translateX(3px); } }
+
+.form-row-link { display: flex; justify-content: flex-end; margin: -10px 0 var(--spacing-3); }
+.form-row-link button { background: none; border: none; padding: 0; color: var(--color-primary); font-size: var(--font-size-body-sm); font-weight: 600; cursor: pointer; }
+.form-row-link button:hover { text-decoration: underline; }
+
+.checkbox-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: var(--spacing-3); }
+.checkbox-row input[type="checkbox"] { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--color-primary); flex-shrink: 0; cursor: pointer; }
+.checkbox-row label { font-size: var(--font-size-body-sm); color: var(--color-text-secondary); cursor: pointer; }
+.checkbox-row a { color: var(--color-primary); text-decoration: none; font-weight: 600; }
+.checkbox-row a:hover { text-decoration: underline; }
+
+.switch-row { text-align: center; margin-top: var(--spacing-3); font-size: var(--font-size-body-sm); color: var(--color-text-secondary); }
+.switch-row button { background: none; border: none; padding: 0; color: var(--color-primary); font-weight: 700; cursor: pointer; font-size: inherit; }
+.switch-row button:hover { text-decoration: underline; }
+
+/* Password strength meter */
+.pw-strength { display: flex; gap: 4px; margin-top: 8px; }
+.pw-strength-seg { height: 4px; flex: 1; border-radius: var(--radius-full); background: var(--color-neutral-200); transition: background var(--transition-fast); }
+.pw-strength-label { font-size: var(--font-size-tiny); font-weight: 700; margin-top: 6px; }
+
+/* Alert banners */
+.alert { padding: var(--spacing-2); border-radius: var(--radius-sm); margin-bottom: var(--spacing-2); display: none; align-items: flex-start; gap: 10px; font-size: var(--font-size-body-sm); animation: slideUp var(--transition-base); }
+.alert.show { display: flex; }
+.alert svg { flex-shrink: 0; width: 20px; height: 20px; margin-top: 1px; }
+.alert-success { background: var(--color-success-light); color: var(--color-success); border-left: 4px solid var(--color-success); }
+.alert-error { background: var(--color-error-light); color: var(--color-error); border-left: 4px solid var(--color-error); }
+.alert-warning { background: var(--color-warning-light); color: var(--color-warning); border-left: 4px solid var(--color-warning); }
+@keyframes slideUp { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   FORGOT PASSWORD PANEL
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.back-link { display: inline-flex; align-items: center; gap: 6px; background: none; border: none; padding: 0; color: var(--color-text-secondary); font-size: var(--font-size-body-sm); font-weight: 600; cursor: pointer; margin-bottom: var(--spacing-3); }
+.back-link:hover { color: var(--color-primary); }
+.back-link svg { width: 16px; height: 16px; }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   OTP MODAL
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(17,24,39,0.55);
+  display: none; align-items: center; justify-content: center; z-index: var(--z-modal);
+  padding: var(--spacing-2); backdrop-filter: blur(3px);
+}
+.modal-overlay.open { display: flex; animation: fadeIn var(--transition-base); }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+.modal {
+  background: var(--color-bg-elevated); border-radius: var(--radius-lg); width: 100%; max-width: 420px;
+  box-shadow: var(--shadow-2xl); padding: var(--spacing-4); animation: slideUp var(--transition-base);
+  max-height: 90vh; overflow-y: auto;
+}
+.modal-icon { width: 56px; height: 56px; border-radius: 50%; background: var(--color-primary-light); color: var(--color-primary); display: flex; align-items: center; justify-content: center; margin: 0 auto var(--spacing-2); font-size: 26px; }
+
+.otp-inputs { display: flex; gap: 8px; justify-content: center; margin: var(--spacing-3) 0; }
+.otp-digit {
+  width: 46px; height: 54px; text-align: center; font-size: 22px; font-weight: 700;
+  border: 2px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg-primary); color: var(--color-text-primary);
+}
+.otp-digit:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-light); }
+.otp-digit.error { border-color: var(--color-error); animation: shakeX 350ms ease; }
+
+.resend-row { text-align: center; font-size: var(--font-size-body-sm); color: var(--color-text-secondary); margin-top: var(--spacing-2); }
+.resend-row button { background: none; border: none; padding: 0; color: var(--color-primary); font-weight: 700; cursor: pointer; font-size: inherit; }
+.resend-row button:disabled { color: var(--color-text-secondary); cursor: not-allowed; font-weight: 600; }
+
+/* Success state */
+.success-state { text-align: center; padding: var(--spacing-2) 0; }
+.success-circle { width: 72px; height: 72px; border-radius: 50%; background: var(--color-success-light); display: flex; align-items: center; justify-content: center; margin: 0 auto var(--spacing-3); }
+.success-circle svg { width: 36px; height: 36px; color: var(--color-success); }
+.success-circle path { stroke-dasharray: 30; stroke-dashoffset: 30; animation: drawCheck 500ms ease forwards 150ms; }
+@keyframes drawCheck { to { stroke-dashoffset: 0; } }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   FOOTER
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.auth-footer { text-align: center; padding: var(--spacing-3) var(--spacing-2); color: var(--color-text-secondary); font-size: var(--font-size-tiny); }
+.auth-footer a { color: var(--color-text-secondary); text-decoration: underline; }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   RESPONSIVE
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+@media (max-width: 1024px) {
+  .auth-shell { grid-template-columns: 1fr; }
+  .auth-brand { display: none; }
+}
+@media (max-width: 480px) {
+  .auth-panel { padding: var(--spacing-3) var(--spacing-2); }
+  .otp-digit { width: 38px; height: 48px; font-size: 18px; }
+  .otp-inputs { gap: 6px; }
+  .modal { padding: var(--spacing-3); }
+}
+</style>
+</head>
+<body>
+
+<a href="#authCard" class="skip-link">Skip to content</a>
+
+<!-- ═══════════════════════════════════════════ NAV ═══════════════════════════════════════════ -->
+<header class="nav">
+  <div class="nav-inner">
+    <a href="index.html" class="logo"><span class="logo-mark">⚡</span> ZAPIT</a>
+    <div style="display:flex; align-items:center; gap: var(--spacing-3);">
+      <a href="index.html#faq" class="nav-help">Need help?</a>
+      <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle dark mode">
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ═══════════════════════════════════════════ AUTH SHELL ═══════════════════════════════════════════ -->
+<div class="auth-shell">
+
+  <!-- Left brand panel -->
+  <div class="auth-brand">
+    <div class="auth-brand-content">
+      <span style="font-size:13px; font-weight:700; letter-spacing:0.06em; opacity:0.85; text-transform:uppercase;">Your AI Sales Rep + Viral Content Machine</span>
+      <h1 class="h1 mt-2" style="color:#fff;">Sleep while your business grows</h1>
+      <ul class="brand-checklist">
+        <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg> WhatsApp replies sent in seconds, 24/7</li>
+        <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg> Content auto-published to 4 platforms</li>
+        <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg> No card required to start free</li>
+        <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg> Live in under 3 minutes</li>
+      </ul>
+      <div class="brand-quote">
+        <p>"Customers used to call me ten times a day asking for the menu. Now ZAPIT sends it instantly and takes the order. I just cook."</p>
+        <div class="who">— Kwame O., Small Chops Catering, Accra</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right auth panel -->
+  <div class="auth-panel">
+    <div class="auth-card" id="authCard">
+
+      <div id="referralBadge" class="referral-badge hidden">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 12v8H4v-8M2 7h20v5H2zM12 22V7M12 7H7.5a2.5 2.5 0 010-5C11 2 12 7 12 7zM12 7h4.5a2.5 2.5 0 000-5C13 2 12 7 12 7z"/></svg>
+        <span>You were referred by <strong id="referralCode"></strong> — you'll both be rewarded! 🎉</span>
+      </div>
+
+      <!-- ── Tabs (hidden during forgot-password flow) ── -->
+      <div class="auth-tabs" id="authTabs">
+        <button class="auth-tab active" id="tabLogin" type="button">Log In</button>
+        <button class="auth-tab" id="tabSignup" type="button">Sign Up</button>
+      </div>
+
+      <!-- ════════════ LOGIN FORM ════════════ -->
+      <form id="loginForm" novalidate>
+        <div class="alert alert-error" id="loginAlert" role="alert" aria-live="polite">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+          <span id="loginAlertText"></span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="loginEmail">Email or Username</label>
+          <div class="form-input-wrap">
+            <input class="form-input" type="text" id="loginEmail" autocomplete="username" placeholder="you@business.com" required>
+          </div>
+          <span class="form-error" id="loginEmailError"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg><span></span></span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="loginPassword">Password</label>
+          <div class="form-input-wrap">
+            <input class="form-input has-icon" type="password" id="loginPassword" autocomplete="current-password" placeholder="Enter your password" required>
+            <button type="button" class="input-icon-btn" id="loginPwToggle" aria-label="Show password">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <span class="form-error" id="loginPasswordError"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg><span></span></span>
+        </div>
+
+        <div class="form-row-link">
+          <button type="button" id="forgotPasswordLink">Forgot password?</button>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-block btn-lg" id="loginSubmitBtn">
+          <span class="btn-text">Log In</span>
+        </button>
+
+        <div class="switch-row">Don't have an account? <button type="button" id="switchToSignup">Sign up free</button></div>
+      </form>
+
+      <!-- ════════════ SIGNUP FORM ════════════ -->
+      <form id="signupForm" class="hidden" novalidate>
+        <div class="alert alert-error" id="signupAlert" role="alert" aria-live="polite">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+          <span id="signupAlertText"></span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="signupName">Full Name</label>
+          <input class="form-input" type="text" id="signupName" autocomplete="name" placeholder="Funke Adeyemi" required>
+          <span class="form-error" id="signupNameError"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg><span></span></span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="signupEmail">Email Address</label>
+          <div class="form-input-wrap">
+            <input class="form-input" type="email" id="signupEmail" autocomplete="email" placeholder="you@business.com" required>
+            <span class="input-status hidden" id="signupEmailStatus"></span>
+          </div>
+          <span class="form-error" id="signupEmailError"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg><span></span></span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="signupUsername">Username</label>
+          <div class="form-input-wrap">
+            <input class="form-input" type="text" id="signupUsername" autocomplete="username" placeholder="funkesfashion" required>
+            <span class="input-status hidden" id="signupUsernameStatus"></span>
+          </div>
+          <span class="form-hint">3-30 characters — letters, numbers and underscores only</span>
+          <span class="form-error" id="signupUsernameError"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg><span></span></span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="signupPassword">Password</label>
+          <div class="form-input-wrap">
+            <input class="form-input has-icon" type="password" id="signupPassword" autocomplete="new-password" placeholder="At least 8 characters" required>
+            <button type="button" class="input-icon-btn" id="signupPwToggle" aria-label="Show password">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <div class="pw-strength" id="pwStrengthBar">
+            <div class="pw-strength-seg"></div><div class="pw-strength-seg"></div><div class="pw-strength-seg"></div><div class="pw-strength-seg"></div>
+          </div>
+          <span class="pw-strength-label" id="pwStrengthLabel" style="color: var(--color-text-secondary);">Type a password to see its strength</span>
+          <span class="form-error" id="signupPasswordError"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg><span></span></span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="signupPasswordConfirm">Confirm Password</label>
+          <input class="form-input" type="password" id="signupPasswordConfirm" autocomplete="new-password" placeholder="Re-enter your password" required>
+          <span class="form-error" id="signupPasswordConfirmError"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg><span></span></span>
+        </div>
+
+        <div class="checkbox-row">
+          <input type="checkbox" id="signupTerms" required>
+          <label for="signupTerms">I agree to ZAPIT's <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a></label>
+        </div>
+        <span class="form-error" id="signupTermsError" style="margin-top:-12px; margin-bottom:16px;"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg><span></span></span>
+
+        <input type="hidden" id="signupReferralCode" value="">
+
+        <button type="submit" class="btn btn-primary btn-block btn-lg" id="signupSubmitBtn">
+          <span class="btn-text">Create Free Account</span>
+        </button>
+
+        <div class="switch-row">Already have an account? <button type="button" id="switchToLogin">Log in</button></div>
+      </form>
+
+      <!-- ════════════ FORGOT PASSWORD — STEP 1 (request code) ════════════ -->
+      <div id="forgotStep1" class="hidden">
+        <button type="button" class="back-link" id="backFromForgot1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>Back to login</button>
+        <h3 class="h3 mb-1">Reset your password</h3>
+        <p class="text-muted body-sm mb-3">Enter the email on your account and we'll send you a reset code.</p>
+
+        <form id="forgotForm1" novalidate>
+          <div class="alert alert-error" id="forgot1Alert" role="alert" aria-live="polite">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+            <span id="forgot1AlertText"></span>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="forgotEmail">Email Address</label>
+            <input class="form-input" type="email" id="forgotEmail" autocomplete="email" placeholder="you@business.com" required>
+            <span class="form-error" id="forgotEmailError"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg><span></span></span>
+          </div>
+          <button type="submit" class="btn btn-primary btn-block btn-lg" id="forgot1SubmitBtn">
+            <span class="btn-text">Send Reset Code</span>
+          </button>
+        </form>
+      </div>
+
+      <!-- ════════════ FORGOT PASSWORD — STEP 2 (enter code + new password) ════════════ -->
+      <div id="forgotStep2" class="hidden">
+        <button type="button" class="back-link" id="backFromForgot2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>Use a different email</button>
+        <h3 class="h3 mb-1">Check your email</h3>
+        <p class="text-muted body-sm mb-3">If an account exists for <strong id="forgotEmailDisplay"></strong>, we've sent a 6-digit reset code. It expires in 10 minutes.</p>
+
+        <form id="forgotForm2" novalidate>
+          <div class="alert alert-error" id="forgot2Alert" role="alert" aria-live="polite">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+            <span id="forgot2AlertText"></span>
+          </div>
+          <div class="alert alert-success" id="forgot2Success" role="status" aria-live="polite">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>
+            <span>Password reset! You can log in with your new password now.</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="resetCode">Reset Code</label>
+            <input class="form-input" type="text" inputmode="numeric" maxlength="6" id="resetCode" placeholder="123456" required>
+            <span class="form-error" id="resetCodeError"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg><span></span></span>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="resetNewPassword">New Password</label>
+            <div class="form-input-wrap">
+              <input class="form-input has-icon" type="password" id="resetNewPassword" autocomplete="new-password" placeholder="At least 8 characters" required>
+              <button type="button" class="input-icon-btn" id="resetPwToggle" aria-label="Show password">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+            <span class="form-error" id="resetNewPasswordError"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg><span></span></span>
+          </div>
+          <button type="submit" class="btn btn-primary btn-block btn-lg" id="forgot2SubmitBtn">
+            <span class="btn-text">Reset Password</span>
+          </button>
+        </form>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<footer class="auth-footer">
+  By continuing you agree to ZAPIT's <a href="#">Terms</a> and <a href="#">Privacy Policy</a>. Need help? <a href="index.html#faq">Visit our FAQ</a>.
+</footer>
+
+<!-- ═══════════════════════════════════════════ OTP MODAL ═══════════════════════════════════════════ -->
+<div class="modal-overlay" id="otpModalOverlay" role="dialog" aria-modal="true" aria-labelledby="otpModalTitle">
+  <div class="modal" id="otpModal">
+
+    <div id="otpVerifyView">
+      <div class="modal-icon">📩</div>
+      <h3 class="h3 text-center mb-1" id="otpModalTitle">Verify your email</h3>
+      <p class="text-muted body-sm text-center">We sent a 6-digit code to <strong id="otpEmailDisplay"></strong></p>
+
+      <div class="alert alert-error" id="otpAlert" role="alert" aria-live="polite">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+        <span id="otpAlertText"></span>
+      </div>
+
+      <div class="otp-inputs" id="otpInputs">
+        <input class="otp-digit" type="text" inputmode="numeric" maxlength="1" aria-label="Digit 1 of 6">
+        <input class="otp-digit" type="text" inputmode="numeric" maxlength="1" aria-label="Digit 2 of 6">
+        <input class="otp-digit" type="text" inputmode="numeric" maxlength="1" aria-label="Digit 3 of 6">
+        <input class="otp-digit" type="text" inputmode="numeric" maxlength="1" aria-label="Digit 4 of 6">
+        <input class="otp-digit" type="text" inputmode="numeric" maxlength="1" aria-label="Digit 5 of 6">
+        <input class="otp-digit" type="text" inputmode="numeric" maxlength="1" aria-label="Digit 6 of 6">
+      </div>
+
+      <button type="button" class="btn btn-primary btn-block btn-lg" id="otpVerifyBtn">
+        <span class="btn-text">Verify Email</span>
+      </button>
+
+      <div class="resend-row">
+        Didn't get it? <button type="button" id="resendOtpBtn">Resend code</button>
+      </div>
+
+      <div class="switch-row">
+        <button type="button" id="skipVerifyBtn">Skip for now, I'll verify later</button>
+      </div>
+    </div>
+
+    <div id="otpSuccessView" class="success-state hidden">
+      <div class="success-circle">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>
+      </div>
+      <h3 class="h3 mb-1">Email verified! 🎉</h3>
+      <p class="text-muted body-sm">Your account is fully active. Taking you to your dashboard…</p>
+    </div>
+
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ════════════════════════════════════════════════════════
+     CONFIG
+     ════════════════════════════════════════════════════════ */
+  // Point this at your deployed ZAPIT backend (e.g. https://zapit-api.onrender.com).
+  // Leave blank to use relative paths (works when this page is served from the same origin as the API).
+  var API_BASE_URL = '';
+
+  // In-memory session state for THIS page load only — intentionally not persisted
+  // to browser storage here. dashboard.html should establish its own secure
+  // session handling (e.g. an httpOnly cookie set by your backend) once built.
+  var ZAPIT_SESSION = { accessToken: null, refreshToken: null, user: null, pendingEmail: null };
+
+  function apiUrl(path) { return (API_BASE_URL || '') + path; }
+
+  async function apiPost(path, body) {
+    var res;
+    try {
+      res = await fetch(apiUrl(path), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    } catch (networkErr) {
+      var err = new Error("Couldn't reach the server. Check your connection and try again.");
+      err.isNetworkError = true;
+      throw err;
+    }
+    var data = null;
+    try { data = await res.json(); } catch (parseErr) { data = null; }
+    if (!res.ok || !data || data.success === false) {
+      var message = (data && (data.error || data.message)) || 'Something went wrong. Please try again.';
+      var apiErr = new Error(message);
+      apiErr.status = res.status;
+      apiErr.data = data;
+      throw apiErr;
+    }
+    return data;
+  }
+
+  /* ════════════════════════════════════════════════════════
+     DARK MODE TOGGLE
+     ════════════════════════════════════════════════════════ */
+  var root = document.documentElement;
+  var themeToggle = document.getElementById('themeToggle');
+  var systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+  function isCurrentlyDark() {
+    if (root.classList.contains('dark-mode')) return true;
+    if (root.classList.contains('light-mode')) return false;
+    return systemDark;
+  }
+  themeToggle.addEventListener('click', function () {
+    if (isCurrentlyDark()) { root.classList.remove('dark-mode'); root.classList.add('light-mode'); }
+    else { root.classList.remove('light-mode'); root.classList.add('dark-mode'); }
+  });
+
+  /* ════════════════════════════════════════════════════════
+     REFERRAL CODE DETECTION (?ref=CODE)
+     ════════════════════════════════════════════════════════ */
+  var refCode = new URLSearchParams(window.location.search).get('ref');
+  if (refCode) {
+    refCode = refCode.trim().toUpperCase();
+    document.getElementById('referralCode').textContent = refCode;
+    document.getElementById('referralBadge').classList.remove('hidden');
+    document.getElementById('signupReferralCode').value = refCode;
+  }
+
+  /* ════════════════════════════════════════════════════════
+     TAB / VIEW SWITCHING
+     ════════════════════════════════════════════════════════ */
+  var authTabs = document.getElementById('authTabs');
+  var tabLogin = document.getElementById('tabLogin');
+  var tabSignup = document.getElementById('tabSignup');
+  var loginForm = document.getElementById('loginForm');
+  var signupForm = document.getElementById('signupForm');
+  var forgotStep1 = document.getElementById('forgotStep1');
+  var forgotStep2 = document.getElementById('forgotStep2');
+
+  function showView(view) {
+    loginForm.classList.add('hidden');
+    signupForm.classList.add('hidden');
+    forgotStep1.classList.add('hidden');
+    forgotStep2.classList.add('hidden');
+    authTabs.classList.remove('hidden');
+
+    if (view === 'login') { loginForm.classList.remove('hidden'); setActiveTab(tabLogin); }
+    else if (view === 'signup') { signupForm.classList.remove('hidden'); setActiveTab(tabSignup); }
+    else if (view === 'forgot1') { forgotStep1.classList.remove('hidden'); authTabs.classList.add('hidden'); }
+    else if (view === 'forgot2') { forgotStep2.classList.remove('hidden'); authTabs.classList.add('hidden'); }
+  }
+  function setActiveTab(activeBtn) {
+    tabLogin.classList.remove('active');
+    tabSignup.classList.remove('active');
+    activeBtn.classList.add('active');
+  }
+
+  tabLogin.addEventListener('click', function () { showView('login'); });
+  tabSignup.addEventListener('click', function () { showView('signup'); });
+  document.getElementById('switchToSignup').addEventListener('click', function () { showView('signup'); });
+  document.getElementById('switchToLogin').addEventListener('click', function () { showView('login'); });
+  document.getElementById('forgotPasswordLink').addEventListener('click', function () { showView('forgot1'); });
+  document.getElementById('backFromForgot1').addEventListener('click', function () { showView('login'); });
+  document.getElementById('backFromForgot2').addEventListener('click', function () { showView('forgot1'); });
+
+  // Auto-open signup tab if a referral code is present
+  if (refCode) showView('signup');
+
+  /* ════════════════════════════════════════════════════════
+     SHARED HELPERS — alerts, button loading, field errors
+     ════════════════════════════════════════════════════════ */
+  function showAlert(alertEl, textElId, message) {
+    document.getElementById(textElId).textContent = message;
+    alertEl.classList.add('show');
+  }
+  function hideAlert(alertEl) { alertEl.classList.remove('show'); }
+
+  function setFieldError(inputEl, errorEl, message) {
+    inputEl.classList.add('is-invalid');
+    inputEl.classList.remove('is-valid');
+    errorEl.querySelector('span').textContent = message;
+    errorEl.classList.add('show');
+  }
+  function clearFieldError(inputEl, errorEl) {
+    inputEl.classList.remove('is-invalid');
+    errorEl.classList.remove('show');
+  }
+  function setFieldValid(inputEl) {
+    inputEl.classList.remove('is-invalid');
+    inputEl.classList.add('is-valid');
+  }
+
+  function setButtonLoading(btn, isLoading, loadingText) {
+    if (isLoading) {
+      btn.disabled = true;
+      btn.dataset.originalText = btn.querySelector('.btn-text').textContent;
+      btn.querySelector('.btn-text').innerHTML = '<span class="spinner" style="display:inline-block;vertical-align:-3px;"></span> ' + (loadingText || 'Please wait…');
+    } else {
+      btn.disabled = false;
+      btn.querySelector('.btn-text').textContent = btn.dataset.originalText || btn.querySelector('.btn-text').textContent;
+    }
+  }
+
+  /* ════════════════════════════════════════════════════════
+     PASSWORD VISIBILITY TOGGLES
+     ════════════════════════════════════════════════════════ */
+  function wireToggle(btnId, inputId) {
+    var btn = document.getElementById(btnId);
+    var input = document.getElementById(inputId);
+    btn.addEventListener('click', function () {
+      var show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+      btn.innerHTML = show
+        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.94 10.94 0 0112 20c-7 0-11-8-11-8a21.8 21.8 0 015.06-6.06M9.9 4.24A10.94 10.94 0 0112 4c7 0 11 8 11 8a21.8 21.8 0 01-2.16 3.19M1 1l22 22"/><path d="M14.12 14.12A3 3 0 119.88 9.88"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+    });
+  }
+  wireToggle('loginPwToggle', 'loginPassword');
+  wireToggle('signupPwToggle', 'signupPassword');
+  wireToggle('resetPwToggle', 'resetNewPassword');
+
+  /* ════════════════════════════════════════════════════════
+     VALIDATION HELPERS
+     ════════════════════════════════════════════════════════ */
+  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  var USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
+
+  function isValidEmail(v) { return EMAIL_RE.test(v.trim()); }
+  function isValidUsername(v) { return USERNAME_RE.test(v.trim()); }
+
+  function scorePassword(pw) {
+    var score = 0;
+    if (pw.length >= 8) score++;
+    if (pw.length >= 12) score++;
+    if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) score++;
+    if (/[0-9]/.test(pw)) score++;
+    if (/[^a-zA-Z0-9]/.test(pw)) score++;
+    return Math.min(score, 4);
+  }
+  var STRENGTH_META = [
+    { label: 'Too short — add more characters', color: 'var(--color-error)' },
+    { label: 'Weak password', color: 'var(--color-error)' },
+    { label: 'Fair password', color: 'var(--color-warning)' },
+    { label: 'Good password', color: 'var(--color-primary)' },
+    { label: 'Strong password', color: 'var(--color-success)' }
+  ];
+
+  /* ════════════════════════════════════════════════════════
+     LOGIN FORM
+     ════════════════════════════════════════════════════════ */
+  var loginEmailInput = document.getElementById('loginEmail');
+  var loginPasswordInput = document.getElementById('loginPassword');
+  var loginAlert = document.getElementById('loginAlert');
+
+  loginEmailInput.addEventListener('blur', function () {
+    var v = loginEmailInput.value.trim();
+    var errEl = document.getElementById('loginEmailError');
+    if (!v) { setFieldError(loginEmailInput, errEl, 'Email or username is required.'); return; }
+    clearFieldError(loginEmailInput, errEl);
+    setFieldValid(loginEmailInput);
+  });
+
+  loginForm.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    hideAlert(loginAlert);
+
+    var email = loginEmailInput.value.trim();
+    var password = loginPasswordInput.value;
+    var emailErr = document.getElementById('loginEmailError');
+    var pwErr = document.getElementById('loginPasswordError');
+    var hasError = false;
+
+    if (!email) { setFieldError(loginEmailInput, emailErr, 'Email or username is required.'); hasError = true; }
+    else clearFieldError(loginEmailInput, emailErr);
+
+    if (!password) { setFieldError(loginPasswordInput, pwErr, 'Password is required.'); hasError = true; }
+    else clearFieldError(loginPasswordInput, pwErr);
+
+    if (hasError) return;
+
+    var btn = document.getElementById('loginSubmitBtn');
+    setButtonLoading(btn, true, 'Logging in…');
+
+    try {
+      var data = await apiPost('/auth/login', { email: email, password: password });
+      ZAPIT_SESSION.accessToken = data.data.access_token;
+      ZAPIT_SESSION.refreshToken = data.data.refresh_token;
+      ZAPIT_SESSION.user = data.data.user;
+
+      btn.querySelector('.btn-text').innerHTML = '✓ Logged in!';
+      setTimeout(function () {
+        var params = new URLSearchParams({ token: ZAPIT_SESSION.accessToken, refresh: ZAPIT_SESSION.refreshToken || '' });
+        window.location.href = 'dashboard.html?' + params.toString();
+      }, 700);
+    } catch (err) {
+      setButtonLoading(btn, false);
+      showAlert(loginAlert, 'loginAlertText', err.message);
+    }
+  });
+
+  /* ════════════════════════════════════════════════════════
+     SIGNUP FORM
+     ════════════════════════════════════════════════════════ */
+  var signupNameInput = document.getElementById('signupName');
+  var signupEmailInput = document.getElementById('signupEmail');
+  var signupUsernameInput = document.getElementById('signupUsername');
+  var signupPasswordInput = document.getElementById('signupPassword');
+  var signupPasswordConfirmInput = document.getElementById('signupPasswordConfirm');
+  var signupTermsInput = document.getElementById('signupTerms');
+  var signupAlert = document.getElementById('signupAlert');
+
+  signupNameInput.addEventListener('blur', function () {
+    var errEl = document.getElementById('signupNameError');
+    if (!signupNameInput.value.trim()) { setFieldError(signupNameInput, errEl, 'Please tell us your name.'); }
+    else { clearFieldError(signupNameInput, errEl); setFieldValid(signupNameInput); }
+  });
+
+  signupEmailInput.addEventListener('input', function () {
+    var errEl = document.getElementById('signupEmailError');
+    var v = signupEmailInput.value.trim();
+    if (!v) { clearFieldError(signupEmailInput, errEl); return; }
+    if (!isValidEmail(v)) { setFieldError(signupEmailInput, errEl, 'Enter a valid email address.'); }
+    else { clearFieldError(signupEmailInput, errEl); setFieldValid(signupEmailInput); }
+  });
+
+  signupUsernameInput.addEventListener('input', function () {
+    var errEl = document.getElementById('signupUsernameError');
+    var v = signupUsernameInput.value.trim();
+    if (!v) { clearFieldError(signupUsernameInput, errEl); return; }
+    if (!isValidUsername(v)) { setFieldError(signupUsernameInput, errEl, 'Use 3-30 letters, numbers or underscores only.'); }
+    else { clearFieldError(signupUsernameInput, errEl); setFieldValid(signupUsernameInput); }
+  });
+
+  signupPasswordInput.addEventListener('input', function () {
+    var pw = signupPasswordInput.value;
+    var segs = document.querySelectorAll('#pwStrengthBar .pw-strength-seg');
+    var labelEl = document.getElementById('pwStrengthLabel');
+
+    if (!pw) {
+      segs.forEach(function (s) { s.style.background = 'var(--color-neutral-200)'; });
+      labelEl.textContent = 'Type a password to see its strength';
+      labelEl.style.color = 'var(--color-text-secondary)';
+      return;
+    }
+    var score = scorePassword(pw);
+    var meta = STRENGTH_META[score];
+    segs.forEach(function (s, i) { s.style.background = i < score ? meta.color : 'var(--color-neutral-200)'; });
+    labelEl.textContent = meta.label;
+    labelEl.style.color = meta.color;
+
+    var errEl = document.getElementById('signupPasswordError');
+    if (pw.length < 8) setFieldError(signupPasswordInput, errEl, 'Password must be at least 8 characters.');
+    else { clearFieldError(signupPasswordInput, errEl); setFieldValid(signupPasswordInput); }
+
+    // Re-check confirm field if already filled
+    if (signupPasswordConfirmInput.value) signupPasswordConfirmInput.dispatchEvent(new Event('input'));
+  });
+
+  signupPasswordConfirmInput.addEventListener('input', function () {
+    var errEl = document.getElementById('signupPasswordConfirmError');
+    var v = signupPasswordConfirmInput.value;
+    if (!v) { clearFieldError(signupPasswordConfirmInput, errEl); return; }
+    if (v !== signupPasswordInput.value) { setFieldError(signupPasswordConfirmInput, errEl, "Passwords don't match."); }
+    else { clearFieldError(signupPasswordConfirmInput, errEl); setFieldValid(signupPasswordConfirmInput); }
+  });
+
+  signupForm.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    hideAlert(signupAlert);
+
+    var fullName = signupNameInput.value.trim();
+    var email = signupEmailInput.value.trim();
+    var username = signupUsernameInput.value.trim();
+    var password = signupPasswordInput.value;
+    var passwordConfirm = signupPasswordConfirmInput.value;
+    var hasError = false;
+
+    if (!fullName) { setFieldError(signupNameInput, document.getElementById('signupNameError'), 'Please tell us your name.'); hasError = true; }
+    if (!isValidEmail(email)) { setFieldError(signupEmailInput, document.getElementById('signupEmailError'), 'Enter a valid email address.'); hasError = true; }
+    if (!isValidUsername(username)) { setFieldError(signupUsernameInput, document.getElementById('signupUsernameError'), 'Use 3-30 letters, numbers or underscores only.'); hasError = true; }
+    if (password.length < 8) { setFieldError(signupPasswordInput, document.getElementById('signupPasswordError'), 'Password must be at least 8 characters.'); hasError = true; }
+    if (passwordConfirm !== password) { setFieldError(signupPasswordConfirmInput, document.getElementById('signupPasswordConfirmError'), "Passwords don't match."); hasError = true; }
+    if (!signupTermsInput.checked) { setFieldError(signupTermsInput, document.getElementById('signupTermsError'), 'Please accept the Terms of Service to continue.'); hasError = true; }
+    else clearFieldError(signupTermsInput, document.getElementById('signupTermsError'));
+
+    if (hasError) return;
+
+    var btn = document.getElementById('signupSubmitBtn');
+    setButtonLoading(btn, true, 'Creating account…');
+
+    try {
+      var payload = { email: email, username: username, password: password, full_name: fullName };
+      var refVal = document.getElementById('signupReferralCode').value;
+      if (refVal) payload.referral_code = refVal;
+
+      var data = await apiPost('/auth/register', payload);
+      ZAPIT_SESSION.accessToken = data.data.access_token;
+      ZAPIT_SESSION.refreshToken = data.data.refresh_token;
+      ZAPIT_SESSION.user = data.data.user;
+      ZAPIT_SESSION.pendingEmail = email;
+
+      setButtonLoading(btn, false);
+      openOtpModal(email);
+    } catch (err) {
+      setButtonLoading(btn, false);
+      showAlert(signupAlert, 'signupAlertText', err.message);
+    }
+  });
+
+  /* ════════════════════════════════════════════════════════
+     FORGOT PASSWORD — STEP 1
+     ════════════════════════════════════════════════════════ */
+  var forgotEmailInput = document.getElementById('forgotEmail');
+  var forgot1Alert = document.getElementById('forgot1Alert');
+
+  document.getElementById('forgotForm1').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    hideAlert(forgot1Alert);
+    var email = forgotEmailInput.value.trim();
+    var errEl = document.getElementById('forgotEmailError');
+
+    if (!isValidEmail(email)) { setFieldError(forgotEmailInput, errEl, 'Enter a valid email address.'); return; }
+    clearFieldError(forgotEmailInput, errEl);
+
+    var btn = document.getElementById('forgot1SubmitBtn');
+    setButtonLoading(btn, true, 'Sending…');
+
+    try {
+      await apiPost('/auth/forgot-password', { email: email });
+      setButtonLoading(btn, false);
+      ZAPIT_SESSION.pendingEmail = email;
+      document.getElementById('forgotEmailDisplay').textContent = email;
+      document.getElementById('forgot2Success').classList.remove('show');
+      showView('forgot2');
+    } catch (err) {
+      setButtonLoading(btn, false);
+      showAlert(forgot1Alert, 'forgot1AlertText', err.message);
+    }
+  });
+
+  /* ════════════════════════════════════════════════════════
+     FORGOT PASSWORD — STEP 2
+     ════════════════════════════════════════════════════════ */
+  var resetCodeInput = document.getElementById('resetCode');
+  var resetNewPasswordInput = document.getElementById('resetNewPassword');
+  var forgot2Alert = document.getElementById('forgot2Alert');
+
+  resetCodeInput.addEventListener('input', function () {
+    resetCodeInput.value = resetCodeInput.value.replace(/[^0-9]/g, '').slice(0, 6);
+  });
+
+  document.getElementById('forgotForm2').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    hideAlert(forgot2Alert);
+    document.getElementById('forgot2Success').classList.remove('show');
+
+    var code = resetCodeInput.value.trim();
+    var newPassword = resetNewPasswordInput.value;
+    var hasError = false;
+
+    if (code.length !== 6) { setFieldError(resetCodeInput, document.getElementById('resetCodeError'), 'Enter the 6-digit code from your email.'); hasError = true; }
+    else clearFieldError(resetCodeInput, document.getElementById('resetCodeError'));
+
+    if (newPassword.length < 8) { setFieldError(resetNewPasswordInput, document.getElementById('resetNewPasswordError'), 'Password must be at least 8 characters.'); hasError = true; }
+    else clearFieldError(resetNewPasswordInput, document.getElementById('resetNewPasswordError'));
+
+    if (hasError) return;
+
+    var btn = document.getElementById('forgot2SubmitBtn');
+    setButtonLoading(btn, true, 'Resetting…');
+
+    try {
+      await apiPost('/auth/reset-password', { email: ZAPIT_SESSION.pendingEmail, code: code, new_password: newPassword });
+      setButtonLoading(btn, false);
+      document.getElementById('forgot2Success').classList.add('show');
+      resetCodeInput.value = '';
+      resetNewPasswordInput.value = '';
+      setTimeout(function () { showView('login'); }, 1800);
+    } catch (err) {
+      setButtonLoading(btn, false);
+      showAlert(forgot2Alert, 'forgot2AlertText', err.message);
+    }
+  });
+
+  /* ════════════════════════════════════════════════════════
+     OTP VERIFICATION MODAL
+     ════════════════════════════════════════════════════════ */
+  var otpOverlay = document.getElementById('otpModalOverlay');
+  var otpVerifyView = document.getElementById('otpVerifyView');
+  var otpSuccessView = document.getElementById('otpSuccessView');
+  var otpDigits = Array.prototype.slice.call(document.querySelectorAll('.otp-digit'));
+  var otpAlert = document.getElementById('otpAlert');
+  var resendBtn = document.getElementById('resendOtpBtn');
+  var resendCooldownTimer = null;
+
+  function openOtpModal(email) {
+    document.getElementById('otpEmailDisplay').textContent = email;
+    otpVerifyView.classList.remove('hidden');
+    otpSuccessView.classList.add('hidden');
+    hideAlert(otpAlert);
+    otpDigits.forEach(function (d) { d.value = ''; d.classList.remove('error'); });
+    otpOverlay.classList.add('open');
+    setTimeout(function () { otpDigits[0].focus(); }, 100);
+    startResendCooldown(60);
+  }
+  function closeOtpModal() { otpOverlay.classList.remove('open'); }
+
+  otpDigits.forEach(function (input, idx) {
+    input.addEventListener('input', function () {
+      input.value = input.value.replace(/[^0-9]/g, '').slice(0, 1);
+      input.classList.remove('error');
+      if (input.value && idx < otpDigits.length - 1) otpDigits[idx + 1].focus();
+      if (input.value && idx === otpDigits.length - 1) {
+        var code = otpDigits.map(function (d) { return d.value; }).join('');
+        if (code.length === 6) submitOtp(code);
+      }
+    });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Backspace' && !input.value && idx > 0) otpDigits[idx - 1].focus();
+    });
+    input.addEventListener('paste', function (e) {
+      e.preventDefault();
+      var pasted = (e.clipboardData || window.clipboardData).getData('text').replace(/[^0-9]/g, '').slice(0, 6);
+      pasted.split('').forEach(function (ch, i) { if (otpDigits[i]) otpDigits[i].value = ch; });
+      var nextEmpty = otpDigits.findIndex(function (d) { return !d.value; });
+      (nextEmpty === -1 ? otpDigits[5] : otpDigits[nextEmpty]).focus();
+      if (pasted.length === 6) submitOtp(pasted);
+    });
+  });
+
+  async function submitOtp(code) {
+    hideAlert(otpAlert);
+    var btn = document.getElementById('otpVerifyBtn');
+    setButtonLoading(btn, true, 'Verifying…');
+
+    try {
+      await apiPost('/auth/verify-email', { email: ZAPIT_SESSION.pendingEmail, code: code });
+      setButtonLoading(btn, false);
+      otpVerifyView.classList.add('hidden');
+      otpSuccessView.classList.remove('hidden');
+      if (resendCooldownTimer) clearInterval(resendCooldownTimer);
+      setTimeout(function () {
+        var params = new URLSearchParams({ token: ZAPIT_SESSION.accessToken, refresh: ZAPIT_SESSION.refreshToken || '' });
+        window.location.href = 'dashboard.html?' + params.toString();
+      }, 1600);
+    } catch (err) {
+      setButtonLoading(btn, false);
+      showAlert(otpAlert, 'otpAlertText', err.message);
+      otpDigits.forEach(function (d) { d.classList.add('error'); });
+      otpDigits.forEach(function (d) { d.value = ''; });
+      otpDigits[0].focus();
+    }
+  }
+
+  document.getElementById('otpVerifyBtn').addEventListener('click', function () {
+    var code = otpDigits.map(function (d) { return d.value; }).join('');
+    if (code.length !== 6) {
+      showAlert(otpAlert, 'otpAlertText', 'Enter the full 6-digit code.');
+      return;
+    }
+    submitOtp(code);
+  });
+
+  function startResendCooldown(seconds) {
+    var remaining = seconds;
+    resendBtn.disabled = true;
+    resendBtn.textContent = 'Resend code (' + remaining + 's)';
+    if (resendCooldownTimer) clearInterval(resendCooldownTimer);
+    resendCooldownTimer = setInterval(function () {
+      remaining--;
+      if (remaining <= 0) {
+        clearInterval(resendCooldownTimer);
+        resendBtn.disabled = false;
+        resendBtn.textContent = 'Resend code';
+      } else {
+        resendBtn.textContent = 'Resend code (' + remaining + 's)';
+      }
+    }, 1000);
+  }
+
+  resendBtn.addEventListener('click', async function () {
+    hideAlert(otpAlert);
+    try {
+      await apiPost('/auth/resend-otp', { email: ZAPIT_SESSION.pendingEmail, type: 'email_verify' });
+      showAlert(otpAlert, 'otpAlertText', 'Code sent! Check your email.');
+      otpAlert.classList.remove('alert-error');
+      otpAlert.classList.add('alert-success');
+      startResendCooldown(60);
+    } catch (err) {
+      otpAlert.classList.remove('alert-success');
+      otpAlert.classList.add('alert-error');
+      showAlert(otpAlert, 'otpAlertText', err.message);
+    }
+  });
+
+  document.getElementById('skipVerifyBtn').addEventListener('click', function () {
+    closeOtpModal();
+    var params = new URLSearchParams({ token: ZAPIT_SESSION.accessToken, refresh: ZAPIT_SESSION.refreshToken || '' });
+    window.location.href = 'dashboard.html?' + params.toString();
+  });
+
+  otpOverlay.addEventListener('click', function (e) {
+    if (e.target === otpOverlay) { /* require explicit action — no accidental dismiss on overlay click */ }
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && otpOverlay.classList.contains('open')) {
+      // Escape only closes if verification already succeeded; otherwise keep user on task
+      if (!otpSuccessView.classList.contains('hidden')) closeOtpModal();
+    }
+  });
+
+})();
+</script>
+
+</body>
+</html>

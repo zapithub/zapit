@@ -1,0 +1,30 @@
+{
+  "name": "zapit-backend",
+  "version": "3.0.0",
+  "description": "ZAPIT Backend — AI Sales Rep + Viral Content Machine for African SMEs",
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "check": "node --input-type=module --check < index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "node-cron": "^3.0.3",
+    "sharp": "^0.33.1"
+  },
+  "keywords": ["zapit", "whatsapp", "ai", "content", "africa", "saas"],
+  "author": "ZAPIT",
+  "license": "UNLICENSED"
+}

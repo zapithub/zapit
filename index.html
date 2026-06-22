@@ -1,0 +1,1456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="description" content="ZAPIT replies to your WhatsApp customers, takes their orders, and posts content to TikTok, Instagram, Facebook and YouTube automatically — built for African entrepreneurs, zero tech skills required.">
+<meta name="theme-color" content="#6366F1">
+<title>ZAPIT — Your AI Sales Rep + Viral Content Machine</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%236366F1'/%3E%3Cpath d='M55 18 L30 56 H47 L43 82 L72 42 H53 Z' fill='white'/%3E%3C/svg%3E">
+
+<style>
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   DESIGN TOKENS
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+:root {
+  /* Colors — Light mode (default) */
+  --color-primary: #6366F1;
+  --color-primary-hover: #4F46E5;
+  --color-primary-light: #EEF2FF;
+  --color-primary-dark: #3730A3;
+  --color-accent: #8B5CF6;
+  --color-accent-light: #F3EEFF;
+
+  --color-success: #10B981;
+  --color-success-light: #D1FAE5;
+  --color-warning: #F59E0B;
+  --color-warning-light: #FEF3C7;
+  --color-error: #EF4444;
+  --color-error-light: #FEE2E2;
+
+  --color-neutral-900: #111827;
+  --color-neutral-800: #1F2937;
+  --color-neutral-700: #374151;
+  --color-neutral-600: #4B5563;
+  --color-neutral-500: #6B7280;
+  --color-neutral-400: #9CA3AF;
+  --color-neutral-300: #D1D5DB;
+  --color-neutral-200: #E5E7EB;
+  --color-neutral-100: #F3F4F6;
+  --color-neutral-50:  #F9FAFB;
+
+  --color-bg-primary: #FFFFFF;
+  --color-bg-secondary: #F9FAFB;
+  --color-bg-elevated: #FFFFFF;
+  --color-text-primary: #111827;
+  --color-text-secondary: #6B7280;
+  --color-border: #E5E7EB;
+
+  --wa-bubble-out: #DCFCE7;
+  --wa-bubble-in: #FFFFFF;
+
+  /* Typography */
+  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  --font-size-display: clamp(34px, 6vw, 48px);
+  --line-height-display: clamp(40px, 6.5vw, 56px);
+  --font-weight-display: 700;
+
+  --font-size-h1: clamp(26px, 4.5vw, 36px);
+  --line-height-h1: clamp(32px, 5vw, 44px);
+  --font-weight-h1: 700;
+
+  --font-size-h2: clamp(22px, 3.4vw, 28px);
+  --line-height-h2: clamp(28px, 3.8vw, 36px);
+  --font-weight-h2: 600;
+
+  --font-size-h3: 24px;
+  --line-height-h3: 32px;
+  --font-weight-h3: 600;
+
+  --font-size-h4: 20px;
+  --line-height-h4: 28px;
+  --font-weight-h4: 600;
+
+  --font-size-body-lg: 18px;
+  --line-height-body-lg: 28px;
+
+  --font-size-body: 16px;
+  --line-height-body: 24px;
+
+  --font-size-body-sm: 14px;
+  --line-height-body-sm: 20px;
+
+  --font-size-tiny: 12px;
+  --line-height-tiny: 16px;
+  --font-weight-tiny: 500;
+
+  /* Spacing — 8px grid */
+  --spacing-1: 8px;
+  --spacing-2: 16px;
+  --spacing-3: 24px;
+  --spacing-4: 32px;
+  --spacing-5: 40px;
+  --spacing-6: 48px;
+  --spacing-8: 64px;
+  --spacing-10: 80px;
+  --spacing-12: 96px;
+
+  /* Shadows */
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 6px rgba(0,0,0,0.07), 0 2px 4px rgba(0,0,0,0.06);
+  --shadow-lg: 0 10px 15px rgba(0,0,0,0.1), 0 4px 6px rgba(0,0,0,0.05);
+  --shadow-xl: 0 20px 25px rgba(0,0,0,0.1), 0 10px 10px rgba(0,0,0,0.04);
+  --shadow-2xl: 0 25px 50px rgba(0,0,0,0.25);
+
+  /* Border radius */
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-full: 9999px;
+
+  /* Motion */
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 500ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Layout */
+  --max-width-xs: 320px;
+  --max-width-sm: 640px;
+  --max-width-md: 768px;
+  --max-width-lg: 1024px;
+  --max-width-xl: 1280px;
+  --max-width-2xl: 1536px;
+
+  --header-height: 72px;
+  --z-header: 100;
+  --z-overlay: 200;
+}
+
+/* Dark mode — system preference (only when user hasn't manually overridden) */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light-mode):not(.dark-mode) { --is-dark-auto: 1; }
+  :root:not(.light-mode) {
+    --color-bg-primary: #0B0F19;
+    --color-bg-secondary: #111827;
+    --color-bg-elevated: #1A2235;
+    --color-text-primary: #F9FAFB;
+    --color-text-secondary: #9CA3AF;
+    --color-border: #283044;
+
+    --color-primary-light: #1E1B4B;
+    --color-accent-light: #2E1F4D;
+    --color-success-light: #06281D;
+    --color-warning-light: #2E2308;
+    --color-error-light: #2E1212;
+
+    --wa-bubble-out: #0F3D2A;
+    --wa-bubble-in: #1A2235;
+  }
+}
+/* Dark mode — manual toggle (always wins) */
+:root.dark-mode {
+  --color-bg-primary: #0B0F19;
+  --color-bg-secondary: #111827;
+  --color-bg-elevated: #1A2235;
+  --color-text-primary: #F9FAFB;
+  --color-text-secondary: #9CA3AF;
+  --color-border: #283044;
+
+  --color-primary-light: #1E1B4B;
+  --color-accent-light: #2E1F4D;
+  --color-success-light: #06281D;
+  --color-warning-light: #2E2308;
+  --color-error-light: #2E1212;
+
+  --wa-bubble-out: #0F3D2A;
+  --wa-bubble-in: #1A2235;
+}
+/* Light mode — manual force (always wins over system dark) */
+:root.light-mode {
+  --color-bg-primary: #FFFFFF;
+  --color-bg-secondary: #F9FAFB;
+  --color-bg-elevated: #FFFFFF;
+  --color-text-primary: #111827;
+  --color-text-secondary: #6B7280;
+  --color-border: #E5E7EB;
+
+  --color-primary-light: #EEF2FF;
+  --color-accent-light: #F3EEFF;
+  --color-success-light: #D1FAE5;
+  --color-warning-light: #FEF3C7;
+  --color-error-light: #FEE2E2;
+
+  --wa-bubble-out: #DCFCE7;
+  --wa-bubble-in: #FFFFFF;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   RESET & BASE
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { font-size: 16px; scroll-behavior: smooth; }
+body {
+  font-family: var(--font-family);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color var(--transition-base), color var(--transition-base);
+  overflow-x: hidden;
+}
+img, svg { display: block; max-width: 100%; }
+a { color: inherit; }
+button { font-family: inherit; }
+
+.skip-link {
+  position: absolute;
+  top: -48px;
+  left: 8px;
+  background: var(--color-primary);
+  color: #fff;
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  z-index: 1000;
+  transition: top var(--transition-fast);
+}
+.skip-link:focus { top: 8px; }
+
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   TYPOGRAPHY
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.display { font-size: var(--font-size-display); line-height: var(--line-height-display); font-weight: var(--font-weight-display); letter-spacing: -0.02em; }
+h1, .h1 { font-size: var(--font-size-h1); line-height: var(--line-height-h1); font-weight: var(--font-weight-h1); letter-spacing: -0.01em; }
+h2, .h2 { font-size: var(--font-size-h2); line-height: var(--line-height-h2); font-weight: var(--font-weight-h2); }
+h3, .h3 { font-size: var(--font-size-h3); line-height: var(--line-height-h3); font-weight: var(--font-weight-h3); }
+h4, .h4 { font-size: var(--font-size-h4); line-height: var(--line-height-h4); font-weight: var(--font-weight-h4); }
+.body-lg { font-size: var(--font-size-body-lg); line-height: var(--line-height-body-lg); }
+.body-sm { font-size: var(--font-size-body-sm); line-height: var(--line-height-body-sm); }
+.tiny { font-size: var(--font-size-tiny); line-height: var(--line-height-tiny); font-weight: var(--font-weight-tiny); }
+
+.gradient-text {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-accent) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   BUTTONS
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-1);
+  padding: 12px 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-body);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+.btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+.btn:active { transform: translateY(0); }
+.btn-primary { background: var(--color-primary); color: #fff; }
+.btn-primary:hover { background: var(--color-primary-hover); }
+.btn-secondary { background: var(--color-neutral-100); color: var(--color-text-primary); }
+.btn-secondary:hover { background: var(--color-neutral-200); }
+.btn-outline { background: transparent; color: var(--color-primary); border: 2px solid var(--color-primary); }
+.btn-outline:hover { background: var(--color-primary-light); }
+.btn-lg { padding: 16px 32px; font-size: var(--font-size-body-lg); }
+.btn-sm { padding: 8px 16px; font-size: var(--font-size-body-sm); }
+.btn-icon { padding: 10px; border-radius: var(--radius-full); }
+.btn-block { width: 100%; }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   CARDS / BADGES
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.card {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-3);
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition-base);
+}
+.card:hover { box-shadow: var(--shadow-md); border-color: var(--color-primary); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 14px;
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-tiny);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.badge-primary { background: var(--color-primary-light); color: var(--color-primary-dark); }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   LAYOUT
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.container { width: 100%; max-width: var(--max-width-xl); margin: 0 auto; padding: 0 var(--spacing-2); }
+.section { padding: var(--spacing-10) 0; }
+.section-head { text-align: center; max-width: 640px; margin: 0 auto var(--spacing-6); }
+.grid { display: grid; gap: var(--spacing-3); }
+.grid-2 { grid-template-columns: repeat(2, 1fr); }
+.grid-3 { grid-template-columns: repeat(3, 1fr); }
+.grid-4 { grid-template-columns: repeat(4, 1fr); }
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+.justify-center { justify-content: center; }
+.justify-between { justify-content: space-between; }
+.gap-1 { gap: var(--spacing-1); }
+.gap-2 { gap: var(--spacing-2); }
+.gap-3 { gap: var(--spacing-3); }
+.text-center { text-align: center; }
+.text-muted { color: var(--color-text-secondary); }
+.mb-1 { margin-bottom: var(--spacing-1); }
+.mb-2 { margin-bottom: var(--spacing-2); }
+.mb-3 { margin-bottom: var(--spacing-3); }
+.mb-4 { margin-bottom: var(--spacing-4); }
+.mt-2 { margin-top: var(--spacing-2); }
+.mt-3 { margin-top: var(--spacing-3); }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   NAV
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-header);
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  background: color-mix(in srgb, var(--color-bg-primary) 88%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--color-border);
+}
+.nav-inner { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+.logo { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 20px; text-decoration: none; color: var(--color-text-primary); }
+.logo-mark {
+  width: 36px; height: 36px; border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, var(--color-primary), var(--color-accent));
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 18px; flex-shrink: 0;
+}
+.nav-links { display: flex; align-items: center; gap: var(--spacing-4); list-style: none; }
+.nav-links a { text-decoration: none; color: var(--color-text-secondary); font-weight: 500; font-size: var(--font-size-body-sm); transition: color var(--transition-fast); }
+.nav-links a:hover { color: var(--color-primary); }
+.nav-actions { display: flex; align-items: center; gap: var(--spacing-2); }
+.theme-toggle {
+  width: 40px; height: 40px; border-radius: var(--radius-full);
+  border: 1px solid var(--color-border); background: var(--color-bg-secondary);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  color: var(--color-text-primary); transition: all var(--transition-fast);
+}
+.theme-toggle:hover { border-color: var(--color-primary); }
+.theme-toggle svg { width: 18px; height: 18px; }
+.icon-moon { display: none; }
+:root.dark-mode .icon-sun, :root:not(.light-mode):not(.dark-mode) .icon-sun { display: none; }
+:root.dark-mode .icon-moon, :root:not(.light-mode):not(.dark-mode) .icon-moon { display: block; }
+@media (prefers-color-scheme: light) {
+  :root:not(.light-mode):not(.dark-mode) .icon-sun { display: block; }
+  :root:not(.light-mode):not(.dark-mode) .icon-moon { display: none; }
+}
+
+.menu-toggle { display: none; width: 40px; height: 40px; border-radius: var(--radius-sm); border: 1px solid var(--color-border); background: var(--color-bg-secondary); cursor: pointer; align-items: center; justify-content: center; color: var(--color-text-primary); }
+.menu-toggle svg { width: 22px; height: 22px; }
+
+.mobile-menu {
+  display: none;
+  position: fixed;
+  top: var(--header-height);
+  left: 0; right: 0; bottom: 0;
+  background: var(--color-bg-primary);
+  z-index: var(--z-overlay);
+  padding: var(--spacing-3);
+  overflow-y: auto;
+}
+.mobile-menu.open { display: block; animation: fadeIn var(--transition-base); }
+.mobile-menu ul { list-style: none; display: flex; flex-direction: column; gap: var(--spacing-1); }
+.mobile-menu a { display: block; padding: 14px 8px; text-decoration: none; color: var(--color-text-primary); font-size: var(--font-size-h4); font-weight: 600; border-bottom: 1px solid var(--color-border); }
+.mobile-menu .btn { margin-top: var(--spacing-3); }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   HERO
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.hero {
+  position: relative;
+  overflow: hidden;
+  padding: var(--spacing-10) 0 var(--spacing-8);
+  background: linear-gradient(180deg, var(--color-primary-light) 0%, var(--color-bg-primary) 65%);
+}
+.hero::before {
+  content: '';
+  position: absolute; inset: 0;
+  background-image:
+    radial-gradient(circle at 15% 20%, rgba(99,102,241,0.16) 0%, transparent 45%),
+    radial-gradient(circle at 85% 10%, rgba(139,92,246,0.14) 0%, transparent 45%);
+  pointer-events: none;
+}
+.hero-grid {
+  position: relative; z-index: 1;
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: var(--spacing-6);
+  align-items: center;
+}
+.hero-copy { max-width: 560px; }
+.hero-ctas { display: flex; flex-wrap: wrap; gap: var(--spacing-2); margin: var(--spacing-3) 0 var(--spacing-2); }
+.hero-trust { color: var(--color-text-secondary); }
+
+.stats-bar { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--spacing-3); margin-top: var(--spacing-8); position: relative; z-index: 1; }
+.stat-item { text-align: center; }
+.stats-number { font-size: clamp(26px, 3.4vw, 36px); font-weight: 800; color: var(--color-primary); line-height: 1; }
+.stats-label { font-size: var(--font-size-body-sm); color: var(--color-text-secondary); margin-top: 6px; }
+
+/* WhatsApp demo — signature element */
+.wa-demo {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-2xl);
+  overflow: hidden;
+  max-width: 380px;
+  margin: 0 auto;
+  transform: rotate(1.2deg);
+}
+.wa-demo-header {
+  background: #1F8A57;
+  color: #fff;
+  padding: 14px 18px;
+  display: flex; align-items: center; gap: 12px;
+}
+.wa-avatar { width: 38px; height: 38px; border-radius: 50%; background: rgba(255,255,255,0.2); display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+.wa-header-text { line-height: 1.25; }
+.wa-header-name { font-weight: 700; font-size: 15px; }
+.wa-header-status { font-size: 12px; opacity: 0.85; display: flex; align-items: center; gap: 5px; }
+.wa-header-status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #6CFFA8; display: inline-block; }
+.wa-demo-body {
+  background: #E9DFD3;
+  background-image: radial-gradient(rgba(0,0,0,0.025) 1px, transparent 1px);
+  background-size: 14px 14px;
+  min-height: 360px;
+  padding: 18px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wa-bubble {
+  max-width: 80%;
+  padding: 10px 13px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.4;
+  box-shadow: 0 1px 1px rgba(0,0,0,0.08);
+  opacity: 0;
+  transform: translateY(8px);
+  animation: bubbleIn 380ms ease forwards;
+}
+.wa-bubble.in { align-self: flex-start; background: var(--wa-bubble-in); color: #1F2937; border-top-left-radius: 2px; }
+.wa-bubble.out { align-self: flex-end; background: var(--wa-bubble-out); color: #14532D; border-top-right-radius: 2px; }
+:root.dark-mode .wa-bubble.out, :root:not(.light-mode):not(.dark-mode) .wa-bubble.out { color: #BBF7D0; }
+@keyframes bubbleIn { to { opacity: 1; transform: translateY(0); } }
+.wa-typing { align-self: flex-start; background: var(--wa-bubble-in); border-radius: 12px; border-top-left-radius: 2px; padding: 12px 14px; display: inline-flex; gap: 4px; opacity: 0; animation: bubbleIn 300ms ease forwards; }
+.wa-typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--color-neutral-400); animation: typingDot 1s infinite ease-in-out; }
+.wa-typing span:nth-child(2) { animation-delay: 0.15s; }
+.wa-typing span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typingDot { 0%, 60%, 100% { transform: translateY(0); opacity: 0.5; } 30% { transform: translateY(-4px); opacity: 1; } }
+.wa-demo-footer { background: var(--color-bg-secondary); padding: 10px 14px; display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--color-border); }
+.wa-fake-input { flex: 1; height: 34px; border-radius: var(--radius-full); background: var(--color-bg-primary); border: 1px solid var(--color-border); }
+.wa-send { width: 34px; height: 34px; border-radius: 50%; background: #1F8A57; display: flex; align-items: center; justify-content: center; color: #fff; flex-shrink: 0; }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   DUAL VALUE PROP
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.dual-panel {
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-4);
+  height: 100%;
+  border: 1px solid var(--color-border);
+}
+.dual-panel.sales { background: linear-gradient(160deg, var(--color-primary-light), var(--color-bg-elevated) 70%); }
+.dual-panel.content { background: linear-gradient(160deg, var(--color-accent-light), var(--color-bg-elevated) 70%); }
+.dual-icon { width: 52px; height: 52px; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; margin-bottom: var(--spacing-2); font-size: 26px; }
+.dual-panel.sales .dual-icon { background: var(--color-primary); color: #fff; }
+.dual-panel.content .dual-icon { background: var(--color-accent); color: #fff; }
+.dual-list { list-style: none; margin-top: var(--spacing-2); display: flex; flex-direction: column; gap: 10px; }
+.dual-list li { display: flex; gap: 10px; align-items: flex-start; font-size: var(--font-size-body-sm); color: var(--color-text-secondary); }
+.dual-list svg { flex-shrink: 0; width: 18px; height: 18px; color: var(--color-success); margin-top: 2px; }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   FEATURES
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.feature-icon {
+  width: 48px; height: 48px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--color-primary-light);
+  border-radius: var(--radius-md);
+  color: var(--color-primary);
+  margin-bottom: var(--spacing-2);
+  font-size: 22px;
+}
+.feature-card.alt .feature-icon { background: var(--color-accent-light); color: var(--color-accent); }
+.feature-card { opacity: 0; transform: translateY(16px); transition: opacity 500ms ease, transform 500ms ease; }
+.feature-card.in-view { opacity: 1; transform: translateY(0); }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   HOW IT WORKS
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.step { position: relative; padding-left: 56px; }
+.step-num {
+  position: absolute; left: 0; top: 0;
+  width: 40px; height: 40px; border-radius: 50%;
+  background: var(--color-primary); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 16px;
+}
+.step-line { position: absolute; left: 19px; top: 40px; bottom: -32px; width: 2px; background: var(--color-border); }
+.steps-wrap .step:last-child .step-line { display: none; }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   TESTIMONIALS
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.testimonial-avatar {
+  width: 48px; height: 48px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; color: #fff; flex-shrink: 0; font-size: 16px;
+}
+.stars { color: var(--color-warning); letter-spacing: 2px; font-size: 14px; }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   PRICING
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.location-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--color-bg-secondary); border: 1px solid var(--color-border);
+  padding: 8px 16px; border-radius: var(--radius-full);
+  font-size: var(--font-size-body-sm); color: var(--color-text-secondary);
+}
+.billing-toggle { display: inline-flex; align-items: center; background: var(--color-bg-secondary); border: 1px solid var(--color-border); border-radius: var(--radius-full); padding: 4px; margin: var(--spacing-3) 0; }
+.billing-toggle button { border: none; background: transparent; padding: 9px 18px; border-radius: var(--radius-full); font-size: var(--font-size-body-sm); font-weight: 600; color: var(--color-text-secondary); cursor: pointer; transition: all var(--transition-fast); }
+.billing-toggle button.active { background: var(--color-primary); color: #fff; }
+.save-tag { background: var(--color-success-light); color: var(--color-success); font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: var(--radius-full); margin-left: 6px; }
+
+.pricing-card { position: relative; background: var(--color-bg-elevated); border: 2px solid var(--color-border); border-radius: var(--radius-lg); padding: var(--spacing-4); transition: all var(--transition-base); display: flex; flex-direction: column; }
+.pricing-card:hover { transform: translateY(-6px); box-shadow: var(--shadow-xl); }
+.pricing-card.featured { border-color: var(--color-primary); box-shadow: var(--shadow-lg); }
+.pricing-card.featured::before {
+  content: 'MOST POPULAR'; position: absolute; top: -13px; left: 50%; transform: translateX(-50%);
+  background: var(--color-primary); color: #fff; padding: 5px 16px; border-radius: var(--radius-full);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.08em; white-space: nowrap;
+}
+.pricing-plan-icon { font-size: 28px; margin-bottom: 6px; }
+.pricing-plan-name { font-size: var(--font-size-h3); font-weight: 700; margin-bottom: 4px; }
+.pricing-plan-desc { font-size: var(--font-size-body-sm); color: var(--color-text-secondary); margin-bottom: var(--spacing-3); min-height: 40px; }
+.pricing-price { display: flex; align-items: baseline; gap: 4px; margin-bottom: var(--spacing-3); }
+.pricing-currency { font-size: 22px; font-weight: 700; color: var(--color-primary); }
+.pricing-amount { font-size: 38px; font-weight: 800; color: var(--color-primary); line-height: 1; }
+.pricing-period { font-size: var(--font-size-body-sm); color: var(--color-text-secondary); }
+.pricing-features { list-style: none; margin: 0 0 var(--spacing-3); flex: 1; display: flex; flex-direction: column; gap: 10px; }
+.pricing-feature { display: flex; align-items: flex-start; gap: 8px; font-size: var(--font-size-body-sm); }
+.pricing-feature svg { flex-shrink: 0; width: 18px; height: 18px; color: var(--color-success); margin-top: 1px; }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   FAQ
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.faq-item { border-bottom: 1px solid var(--color-border); }
+.faq-q {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-2);
+  background: none; border: none; text-align: left; padding: var(--spacing-3) 0; cursor: pointer;
+  font-size: var(--font-size-body-lg); font-weight: 600; color: var(--color-text-primary);
+}
+.faq-q .chev { flex-shrink: 0; width: 22px; height: 22px; color: var(--color-primary); transition: transform var(--transition-base); }
+.faq-item.open .faq-q .chev { transform: rotate(180deg); }
+.faq-a { max-height: 0; overflow: hidden; transition: max-height var(--transition-base) ease; color: var(--color-text-secondary); }
+.faq-a p { padding-bottom: var(--spacing-3); max-width: 720px; }
+.faq-item.open .faq-a { max-height: 240px; }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   FINAL CTA
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.final-cta {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-accent) 100%);
+  border-radius: var(--radius-xl);
+  padding: var(--spacing-8) var(--spacing-4);
+  text-align: center;
+  color: #fff;
+  position: relative;
+  overflow: hidden;
+}
+.final-cta::before {
+  content: ''; position: absolute; inset: 0;
+  background-image: radial-gradient(circle at 20% 20%, rgba(255,255,255,0.15) 0%, transparent 40%), radial-gradient(circle at 80% 80%, rgba(255,255,255,0.12) 0%, transparent 40%);
+}
+.final-cta > * { position: relative; z-index: 1; }
+.final-cta .btn-primary { background: #fff; color: var(--color-primary); }
+.final-cta .btn-primary:hover { background: var(--color-neutral-100); }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   FOOTER
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.footer { background: var(--color-bg-secondary); border-top: 1px solid var(--color-border); padding: var(--spacing-8) 0 var(--spacing-4); }
+.footer-grid { display: grid; grid-template-columns: 1.4fr repeat(3, 1fr); gap: var(--spacing-4); margin-bottom: var(--spacing-6); }
+.footer-col h4 { font-size: var(--font-size-body-sm); text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-secondary); margin-bottom: var(--spacing-2); }
+.footer-col ul { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+.footer-col a { text-decoration: none; color: var(--color-text-primary); font-size: var(--font-size-body-sm); transition: color var(--transition-fast); }
+.footer-col a:hover { color: var(--color-primary); }
+.footer-bottom { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--spacing-2); padding-top: var(--spacing-3); border-top: 1px solid var(--color-border); color: var(--color-text-secondary); font-size: var(--font-size-body-sm); }
+.social-row { display: flex; gap: 10px; }
+.social-row a { width: 36px; height: 36px; border-radius: 50%; background: var(--color-bg-elevated); border: 1px solid var(--color-border); display: flex; align-items: center; justify-content: center; color: var(--color-text-secondary); }
+.social-row a:hover { color: var(--color-primary); border-color: var(--color-primary); }
+.social-row svg { width: 16px; height: 16px; }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   ANIMATIONS
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   RESPONSIVE — 1024px and below
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+@media (max-width: 1024px) {
+  .grid-4 { grid-template-columns: repeat(2, 1fr); }
+  .grid-3 { grid-template-columns: repeat(2, 1fr); }
+  .footer-grid { grid-template-columns: 1fr 1fr; }
+  .hero-grid { grid-template-columns: 1fr; }
+  .hero-copy { max-width: 100%; text-align: center; margin: 0 auto; }
+  .hero-ctas { justify-content: center; }
+  .wa-demo { margin-top: var(--spacing-4); }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   RESPONSIVE — 768px and below (tablet/mobile)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+@media (max-width: 768px) {
+  .nav-links, .nav-actions .btn { display: none; }
+  .menu-toggle { display: flex; }
+  .section { padding: var(--spacing-6) 0; }
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+  .stats-bar { grid-template-columns: repeat(2, 1fr); gap: var(--spacing-3) var(--spacing-2); }
+  .footer-grid { grid-template-columns: 1fr 1fr; gap: var(--spacing-3); }
+  .footer-bottom { flex-direction: column; align-items: flex-start; }
+  .dual-grid { grid-template-columns: 1fr !important; }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   RESPONSIVE — 480px and below (small phones)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+@media (max-width: 480px) {
+  .container { padding: 0 var(--spacing-2); }
+  .footer-grid { grid-template-columns: 1fr; }
+  .hero-ctas .btn { width: 100%; }
+  .billing-toggle { width: 100%; justify-content: center; }
+  .wa-demo { max-width: 100%; transform: none; }
+  .pricing-amount { font-size: 32px; }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   RESPONSIVE — large desktop (1920px) comfortable max-width is
+   already handled by --max-width-xl on .container
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+</style>
+</head>
+<body>
+
+<a href="#main" class="skip-link">Skip to content</a>
+
+<!-- ═══════════════════════════════════════════ NAV ═══════════════════════════════════════════ -->
+<header class="nav">
+  <div class="container nav-inner">
+    <a href="#main" class="logo">
+      <span class="logo-mark">⚡</span> ZAPIT
+    </a>
+
+    <nav aria-label="Primary">
+      <ul class="nav-links">
+        <li><a href="#features">Features</a></li>
+        <li><a href="#how-it-works">How it works</a></li>
+        <li><a href="#pricing">Pricing</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ul>
+    </nav>
+
+    <div class="nav-actions">
+      <button class="theme-toggle" id="themeToggle" aria-label="Toggle dark mode" type="button">
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+      <a href="#pricing" class="btn btn-secondary btn-sm">Log in</a>
+      <a href="#pricing" class="btn btn-primary btn-sm">Start Free</a>
+      <button class="menu-toggle" id="menuToggle" aria-label="Open menu" aria-expanded="false" aria-controls="mobileMenu" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div class="mobile-menu" id="mobileMenu">
+  <ul>
+    <li><a href="#features">Features</a></li>
+    <li><a href="#how-it-works">How it works</a></li>
+    <li><a href="#pricing">Pricing</a></li>
+    <li><a href="#faq">FAQ</a></li>
+    <li><a href="#pricing">Log in</a></li>
+  </ul>
+  <a href="#pricing" class="btn btn-primary btn-block btn-lg">Start Free — No Card Needed</a>
+</div>
+
+<main id="main">
+
+<!-- ═══════════════════════════════════════════ HERO ═══════════════════════════════════════════ -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-grid">
+      <div class="hero-copy">
+        <span class="badge badge-primary mb-3">🚀 Built for African hustlers — zero tech skills needed</span>
+        <h1 class="display mb-3">
+          Your <span class="gradient-text">AI Sales Rep</span> +<br>
+          <span class="gradient-text">Viral Content Machine</span>
+        </h1>
+        <p class="body-lg text-muted">
+          ZAPIT replies to your WhatsApp customers, takes their orders, and posts
+          scroll-stopping content to TikTok, Instagram, Facebook and YouTube —
+          automatically, while you sleep.
+        </p>
+        <div class="hero-ctas">
+          <a href="#pricing" class="btn btn-primary btn-lg">
+            Start Free — No Card Needed
+            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </a>
+          <a href="#how-it-works" class="btn btn-outline btn-lg">See How It Works</a>
+        </div>
+        <p class="tiny hero-trust">✨ Free forever plan &nbsp;·&nbsp; 🎯 Live in under 3 minutes &nbsp;·&nbsp; 💳 Cancel anytime</p>
+      </div>
+
+      <!-- Signature element: live WhatsApp conversation demo -->
+      <div class="wa-demo" id="waDemo" aria-hidden="true">
+        <div class="wa-demo-header">
+          <div class="wa-avatar">🛍️</div>
+          <div class="wa-header-text">
+            <div class="wa-header-name">Funke's Fashion Store</div>
+            <div class="wa-header-status">Online — powered by ZAPIT</div>
+          </div>
+        </div>
+        <div class="wa-demo-body" id="waBody"></div>
+        <div class="wa-demo-footer">
+          <div class="wa-fake-input"></div>
+          <div class="wa-send">
+            <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stats-bar">
+      <div class="stat-item"><div class="stats-number">24/7</div><div class="stats-label">Always replying, even at 3am</div></div>
+      <div class="stat-item"><div class="stats-number">4</div><div class="stats-label">Platforms posted automatically</div></div>
+      <div class="stat-item"><div class="stats-number">&lt;3min</div><div class="stats-label">From signup to first AI reply</div></div>
+      <div class="stat-item"><div class="stats-number">7</div><div class="stats-label">Languages, including Pidgin &amp; Yoruba</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ DUAL VALUE PROP ═══════════════════════════════════════════ -->
+<section class="section">
+  <div class="container">
+    <div class="section-head">
+      <h2 class="h1 mb-2">One platform. Two jobs done for you.</h2>
+      <p class="body-lg text-muted">While you're busy living your life, ZAPIT is busy running your business.</p>
+    </div>
+
+    <div class="grid grid-2 dual-grid">
+      <div class="dual-panel sales">
+        <div class="dual-icon">💬</div>
+        <h3 class="h3 mb-1">While you sleep, ZAPIT sells</h3>
+        <p class="text-muted body-sm">Your WhatsApp AI Sales Rep never clocks off.</p>
+        <ul class="dual-list">
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>Replies instantly using your real product list and prices</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>Takes orders and collects name, address and quantity</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>Sends payment links and confirms when you've been paid</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>Tracks every customer so you know who to follow up with</li>
+        </ul>
+      </div>
+
+      <div class="dual-panel content">
+        <div class="dual-icon">🎬</div>
+        <h3 class="h3 mb-1">While you sleep, ZAPIT posts</h3>
+        <p class="text-muted body-sm">Your Viral Content Engine never runs out of ideas.</p>
+        <ul class="dual-list">
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>Writes captions in your own voice, not generic AI text</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>Generates videos and images from a single idea</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>Schedules a full month of content in one sitting</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>Publishes to TikTok, Instagram, Facebook and YouTube</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ FEATURES ═══════════════════════════════════════════ -->
+<section class="section" id="features" style="background: var(--color-bg-secondary);">
+  <div class="container">
+    <div class="section-head">
+      <h2 class="h1 mb-2">Everything your business needs, built in</h2>
+      <p class="body-lg text-muted">No plugins, no third-party tools, no learning curve.</p>
+    </div>
+
+    <div class="grid grid-3" id="featuresGrid">
+      <div class="card feature-card">
+        <div class="feature-icon">⚡</div>
+        <h4 class="h4 mb-1">Instant WhatsApp Replies</h4>
+        <p class="text-muted body-sm">Every customer message gets answered in seconds, day or night, using your product list and your own keyword answers.</p>
+      </div>
+      <div class="card feature-card">
+        <div class="feature-icon">🛒</div>
+        <h4 class="h4 mb-1">Smart Order Taking</h4>
+        <p class="text-muted body-sm">Customers order right inside WhatsApp. ZAPIT collects their name, address and quantity without you lifting a finger.</p>
+      </div>
+      <div class="card feature-card">
+        <div class="feature-icon">💳</div>
+        <h4 class="h4 mb-1">Built-In Payments</h4>
+        <p class="text-muted body-sm">Paystack, bank transfer or cash on delivery — get paid and get notified the moment a payment lands.</p>
+      </div>
+      <div class="card feature-card">
+        <div class="feature-icon">👥</div>
+        <h4 class="h4 mb-1">Customer Memory (CRM)</h4>
+        <p class="text-muted body-sm">Every contact is automatically tagged lead, customer or VIP, so you always know who to follow up with.</p>
+      </div>
+      <div class="card feature-card">
+        <div class="feature-icon">📢</div>
+        <h4 class="h4 mb-1">Bulk Broadcasts</h4>
+        <p class="text-muted body-sm">Announce a new drop or sale to your whole customer list in one tap, segmented by who actually buys.</p>
+      </div>
+      <div class="card feature-card alt">
+        <div class="feature-icon">🎥</div>
+        <h4 class="h4 mb-1">AI Video &amp; Image Generation</h4>
+        <p class="text-muted body-sm">Turn a single idea into a finished TikTok, Reel or Shorts-ready video — no camera or editing skills needed.</p>
+      </div>
+      <div class="card feature-card alt">
+        <div class="feature-icon">📅</div>
+        <h4 class="h4 mb-1">Auto-Scheduling, 30 Days Out</h4>
+        <p class="text-muted body-sm">Plan a month of content in one sitting. ZAPIT publishes it across four platforms exactly on schedule.</p>
+      </div>
+      <div class="card feature-card alt">
+        <div class="feature-icon">🗣️</div>
+        <h4 class="h4 mb-1">Your Own Brand Voice</h4>
+        <p class="text-muted body-sm">Teach ZAPIT how you actually talk, so captions sound like you wrote them — never like a robot.</p>
+      </div>
+      <div class="card feature-card alt">
+        <div class="feature-icon">📊</div>
+        <h4 class="h4 mb-1">Real Numbers, Not Guesses</h4>
+        <p class="text-muted body-sm">See exactly which orders came from which post, and the best times to post for your audience.</p>
+      </div>
+      <div class="card feature-card">
+        <div class="feature-icon">🌍</div>
+        <h4 class="h4 mb-1">Speaks Your Language</h4>
+        <p class="text-muted body-sm">English, Pidgin, Yoruba, Igbo, Hausa or Swahili — customers get replies in the language they typed in.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ HOW IT WORKS ═══════════════════════════════════════════ -->
+<section class="section" id="how-it-works">
+  <div class="container" style="max-width: var(--max-width-md);">
+    <div class="section-head">
+      <h2 class="h1 mb-2">Live in three steps, not three weeks</h2>
+      <p class="body-lg text-muted">No developer account. No API keys. No waiting on approvals.</p>
+    </div>
+
+    <div class="flex flex-col gap-4 steps-wrap" style="gap: var(--spacing-5);">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-line"></div>
+        <h4 class="h4 mb-1">Create your account</h4>
+        <p class="text-muted">Tell ZAPIT your business name and what you sell. Takes about 90 seconds — no technical detail required.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-line"></div>
+        <h4 class="h4 mb-1">Connect WhatsApp &amp; socials</h4>
+        <p class="text-muted">Start instantly on our shared WhatsApp number, or link your own. Connect TikTok, Instagram, Facebook or YouTube in two clicks.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h4 class="h4 mb-1">Let ZAPIT take over</h4>
+        <p class="text-muted">Your AI sales rep starts replying immediately. Your content calendar fills itself in. You check in only when you want to.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ TESTIMONIALS ═══════════════════════════════════════════ -->
+<section class="section" style="background: var(--color-bg-secondary);">
+  <div class="container">
+    <div class="section-head">
+      <h2 class="h1 mb-2">Built for hustlers like you</h2>
+      <p class="body-lg text-muted">Real businesses, real categories, real relief.</p>
+    </div>
+
+    <div class="grid grid-3">
+      <div class="card">
+        <div class="stars mb-2">★★★★★</div>
+        <p class="body-sm mb-3">"I used to lose orders because I couldn't reply fast enough at work. Now my bot answers before I even see the notification, and my TikTok page is growing on its own."</p>
+        <div class="flex items-center gap-2">
+          <div class="testimonial-avatar" style="background: var(--color-primary);">FA</div>
+          <div>
+            <div class="font-semibold" style="font-weight:600;">Funke A.</div>
+            <div class="tiny text-muted">Ankara &amp; Fashion, Lagos</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="stars mb-2">★★★★★</div>
+        <p class="body-sm mb-3">"Customers used to call me ten times a day asking for the menu. Now ZAPIT sends it instantly and takes the order. I just cook."</p>
+        <div class="flex items-center gap-2">
+          <div class="testimonial-avatar" style="background: var(--color-accent);">KO</div>
+          <div>
+            <div class="font-semibold" style="font-weight:600;">Kwame O.</div>
+            <div class="tiny text-muted">Small Chops Catering, Accra</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="stars mb-2">★★★★★</div>
+        <p class="body-sm mb-3">"Content used to take me a whole Sunday. Now I plan a month in one sitting, and it actually sounds like me — not like a robot wrote it."</p>
+        <div class="flex items-center gap-2">
+          <div class="testimonial-avatar" style="background: var(--color-success);">AW</div>
+          <div>
+            <div class="font-semibold" style="font-weight:600;">Amina W.</div>
+            <div class="tiny text-muted">Skincare Brand, Nairobi</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ PRICING ═══════════════════════════════════════════ -->
+<section class="section" id="pricing">
+  <div class="container">
+    <div class="section-head">
+      <h2 class="h1 mb-2">Simple, transparent pricing</h2>
+      <p class="body-lg text-muted mb-2">Start free. Upgrade only when you're ready.</p>
+      <div class="location-pill" id="locationPill">
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
+        <span id="locationText">Detecting your location…</span>
+      </div>
+      <div>
+        <div class="billing-toggle" role="group" aria-label="Billing cycle">
+          <button type="button" class="active" id="btnMonthly">Monthly</button>
+          <button type="button" id="btnAnnual">Annual <span class="save-tag">Save 20%</span></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid grid-4" id="pricingGrid">
+      <!-- Pricing cards rendered by JS -->
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ FAQ ═══════════════════════════════════════════ -->
+<section class="section" id="faq" style="background: var(--color-bg-secondary);">
+  <div class="container" style="max-width: var(--max-width-md);">
+    <div class="section-head">
+      <h2 class="h1 mb-2">Frequently asked questions</h2>
+      <p class="body-lg text-muted">Still unsure? Here's what most people ask before starting.</p>
+    </div>
+
+    <div id="faqList">
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">
+          Do I need any technical skills to use ZAPIT?
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="faq-a"><p>No. If you can use WhatsApp, you can use ZAPIT. Most people are live and replying to customers within 3 minutes of signing up.</p></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">
+          Do I need a Meta Developer account or my own WhatsApp Business number?
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="faq-a"><p>No. Start instantly on our shared WhatsApp number. You can upgrade to your own dedicated number any time from your settings — no developer account required.</p></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">
+          Is my customer data safe?
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="faq-a"><p>Yes. Every business's data is fully isolated — no other business can ever see your customers, orders or messages, and sensitive details like access tokens are encrypted.</p></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">
+          Which countries and currencies are supported?
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="faq-a"><p>ZAPIT works anywhere WhatsApp does. Pricing is shown automatically in Naira, Cedi, Shilling, Rand, Dollar or your local currency based on where you're signing up from.</p></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">
+          Can the AI really sound like a real person, not a robot?
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="faq-a"><p>Yes. ZAPIT is built specifically to avoid generic AI phrasing. You can also teach it your own brand voice so replies and captions sound like you.</p></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">
+          What happens if I run out of my monthly replies or content credits?
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="faq-a"><p>You'll get a heads-up before you hit your limit, and you can upgrade in one click. Nothing stops working without warning.</p></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">
+          Can I cancel anytime?
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="faq-a"><p>Yes, anytime, no questions asked. You'll keep full access until the end of your current billing period.</p></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">
+          What if I sell something that isn't physical, like a course or consultation?
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="faq-a"><p>ZAPIT supports physical products, digital products and services — so coaches, consultants and digital sellers are fully covered too.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ FINAL CTA ═══════════════════════════════════════════ -->
+<section class="section">
+  <div class="container">
+    <div class="final-cta">
+      <h2 class="h1 mb-2" style="color:#fff;">Start automating in the next 3 minutes</h2>
+      <p class="body-lg mb-3" style="color: rgba(255,255,255,0.9); max-width: 520px; margin: 0 auto;">
+        Join the free plan today. No card needed, no contracts, no risk.
+      </p>
+      <a href="#pricing" class="btn btn-primary btn-lg">Start Free — No Card Needed</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ═══════════════════════════════════════════ FOOTER ═══════════════════════════════════════════ -->
+<footer class="footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-col">
+        <a href="#main" class="logo mb-2"><span class="logo-mark">⚡</span> ZAPIT</a>
+        <p class="text-muted body-sm" style="max-width: 280px;">Your AI Sales Rep + Viral Content Machine. Built for African entrepreneurs who'd rather sleep than scroll.</p>
+        <div class="social-row mt-3">
+          <a href="#" aria-label="ZAPIT on WhatsApp"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.6 6.3A8.5 8.5 0 003.8 16.2L3 21l4.9-1.3A8.5 8.5 0 1017.6 6.3zm-5.6 13a7 7 0 01-3.6-1l-.3-.2-2.6.7.7-2.5-.2-.3a7 7 0 1110.4-9.3 7 7 0 01-4.4 12.6z"/></svg></a>
+          <a href="#" aria-label="ZAPIT on Instagram"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1"/></svg></a>
+          <a href="#" aria-label="ZAPIT on TikTok"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 3c.4 2 2 3.6 4 3.9v3a7 7 0 01-4-1.3v6.2a5.7 5.7 0 11-5-5.6v3a2.7 2.7 0 102.7 2.7V3H14z"/></svg></a>
+        </div>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#pricing">Pricing</a></li>
+          <li><a href="#how-it-works">How it works</a></li>
+          <li><a href="#faq">FAQ</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Company</h4>
+        <ul>
+          <li><a href="#">About</a></li>
+          <li><a href="#">Affiliate Program</a></li>
+          <li><a href="#">Contact Support</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Legal</h4>
+        <ul>
+          <li><a href="#">Privacy Policy</a></li>
+          <li><a href="#">Terms of Service</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer-bottom">
+      <span>© <span id="year"></span> ZAPIT. Built for Africa's hustlers, creators and small businesses.</span>
+      <span>Made with ⚡ in Lagos, Accra &amp; Nairobi</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ════════════════════════════════════════════════════════
+     YEAR
+     ════════════════════════════════════════════════════════ */
+  document.getElementById('year').textContent = new Date().getFullYear();
+
+  /* ════════════════════════════════════════════════════════
+     DARK MODE TOGGLE (session-only, respects system preference)
+     ════════════════════════════════════════════════════════ */
+  var root = document.documentElement;
+  var themeToggle = document.getElementById('themeToggle');
+  var systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+  function isCurrentlyDark() {
+    if (root.classList.contains('dark-mode')) return true;
+    if (root.classList.contains('light-mode')) return false;
+    return systemDark;
+  }
+
+  themeToggle.addEventListener('click', function () {
+    if (isCurrentlyDark()) {
+      root.classList.remove('dark-mode');
+      root.classList.add('light-mode');
+    } else {
+      root.classList.remove('light-mode');
+      root.classList.add('dark-mode');
+    }
+  });
+
+  /* ════════════════════════════════════════════════════════
+     MOBILE MENU
+     ════════════════════════════════════════════════════════ */
+  var menuToggle = document.getElementById('menuToggle');
+  var mobileMenu = document.getElementById('mobileMenu');
+
+  menuToggle.addEventListener('click', function () {
+    var isOpen = mobileMenu.classList.toggle('open');
+    menuToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+    menuToggle.innerHTML = isOpen
+      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>'
+      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>';
+  });
+
+  Array.prototype.forEach.call(mobileMenu.querySelectorAll('a'), function (link) {
+    link.addEventListener('click', function () {
+      mobileMenu.classList.remove('open');
+      menuToggle.setAttribute('aria-expanded', 'false');
+      menuToggle.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>';
+    });
+  });
+
+  /* ════════════════════════════════════════════════════════
+     FAQ ACCORDION
+     ════════════════════════════════════════════════════════ */
+  Array.prototype.forEach.call(document.querySelectorAll('.faq-item'), function (item) {
+    var btn = item.querySelector('.faq-q');
+    btn.addEventListener('click', function () {
+      var willOpen = !item.classList.contains('open');
+      Array.prototype.forEach.call(document.querySelectorAll('.faq-item'), function (other) {
+        other.classList.remove('open');
+        other.querySelector('.faq-q').setAttribute('aria-expanded', 'false');
+      });
+      if (willOpen) {
+        item.classList.add('open');
+        btn.setAttribute('aria-expanded', 'true');
+      }
+    });
+  });
+
+  /* ════════════════════════════════════════════════════════
+     SCROLL REVEAL (feature cards) — respects reduced motion
+     ════════════════════════════════════════════════════════ */
+  var prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var featureCards = document.querySelectorAll('.feature-card');
+
+  if (prefersReducedMotion || !('IntersectionObserver' in window)) {
+    Array.prototype.forEach.call(featureCards, function (card) { card.classList.add('in-view'); });
+  } else {
+    var observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('in-view');
+          observer.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.15 });
+    Array.prototype.forEach.call(featureCards, function (card) { observer.observe(card); });
+  }
+
+  /* ════════════════════════════════════════════════════════
+     WHATSAPP DEMO ANIMATION (signature hero element)
+     ════════════════════════════════════════════════════════ */
+  var waScript = [
+    { side: 'in',  text: 'Hi! Do you have the blue Ankara dress in stock? 😊' },
+    { side: 'typing' },
+    { side: 'out', text: 'Yes! Available in M, L and XL — ₦15,000. Want me to start your order? 🛍️' },
+    { side: 'in',  text: 'Yes please, size M' },
+    { side: 'typing' },
+    { side: 'out', text: 'Perfect ✅ Send your delivery address and I\u2019ll send a payment link right away.' }
+  ];
+
+  function runWaDemo() {
+    var body = document.getElementById('waBody');
+    if (!body) return;
+    body.innerHTML = '';
+
+    if (prefersReducedMotion) {
+      waScript.forEach(function (msg) {
+        if (msg.side === 'typing') return;
+        var div = document.createElement('div');
+        div.className = 'wa-bubble ' + msg.side;
+        div.style.opacity = '1';
+        div.style.transform = 'none';
+        div.style.animation = 'none';
+        div.textContent = msg.text;
+        body.appendChild(div);
+      });
+      return;
+    }
+
+    var i = 0;
+    function step() {
+      if (i >= waScript.length) {
+        setTimeout(function () { runWaDemo(); }, 2200);
+        return;
+      }
+      var msg = waScript[i];
+
+      if (msg.side === 'typing') {
+        var typing = document.createElement('div');
+        typing.className = 'wa-typing';
+        typing.innerHTML = '<span></span><span></span><span></span>';
+        body.appendChild(typing);
+        body.scrollTop = body.scrollHeight;
+        setTimeout(function () {
+          if (typing.parentNode) typing.parentNode.removeChild(typing);
+          i++;
+          step();
+        }, 900);
+        return;
+      }
+
+      var bubble = document.createElement('div');
+      bubble.className = 'wa-bubble ' + msg.side;
+      bubble.textContent = msg.text;
+      body.appendChild(bubble);
+      body.scrollTop = body.scrollHeight;
+      i++;
+      setTimeout(step, 1100);
+    }
+    step();
+  }
+  runWaDemo();
+
+  /* ════════════════════════════════════════════════════════
+     DYNAMIC PRICING SYSTEM
+     ════════════════════════════════════════════════════════ */
+
+  // Point this at your deployed ZAPIT backend (e.g. https://zapit-api.onrender.com).
+  // Leave blank to rely entirely on client-side location detection + built-in pricing table.
+  var ZAPIT_API_BASE = '';
+
+  var CURRENCY_SYMBOLS = { NGN: '₦', GHS: 'GH₵', KES: 'KSh', ZAR: 'R', USD: '$', GBP: '£', EUR: '€' };
+  var COUNTRY_CURRENCY = { NG: 'NGN', GH: 'GHS', KE: 'KES', ZA: 'ZAR', US: 'USD', GB: 'GBP', CA: 'USD', AU: 'USD', DE: 'EUR', FR: 'EUR', NL: 'EUR' };
+  var COUNTRY_NAMES = { NG: 'Nigeria', GH: 'Ghana', KE: 'Kenya', ZA: 'South Africa', US: 'the United States', GB: 'the United Kingdom', CA: 'Canada', AU: 'Australia', DE: 'Germany', FR: 'France', NL: 'the Netherlands' };
+
+  var PLAN_LIMITS = {
+    free:    { whatsapp_replies: 100,   video_generations: 3,   max_social_platforms: 2, products_limit: 5,    analytics_enabled: false, price: { NGN: 0,     GHS: 0,   KES: 0,    ZAR: 0,    USD: 0  } },
+    creator: { whatsapp_replies: 1000,  video_generations: 30,  max_social_platforms: 4, products_limit: 30,   analytics_enabled: true,  price: { NGN: 10000, GHS: 150, KES: 1500, ZAR: 220,  USD: 12 } },
+    growth:  { whatsapp_replies: 5000,  video_generations: 100, max_social_platforms: 6, products_limit: 150,  analytics_enabled: true,  price: { NGN: 25000, GHS: 375, KES: 3750, ZAR: 550,  USD: 30 } },
+    agency:  { whatsapp_replies: 99999, video_generations: 500, max_social_platforms: 7, products_limit: 9999, analytics_enabled: true,  price: { NGN: 50000, GHS: 750, KES: 7500, ZAR: 1100, USD: 60 } }
+  };
+
+  var PLAN_ORDER = ['free', 'creator', 'growth', 'agency'];
+  var PLAN_ICON = { free: '🎁', creator: '🚀', growth: '📈', agency: '🏢' };
+  var PLAN_DESC = {
+    free: 'Test the waters with zero risk',
+    creator: 'For solo hustlers ready to scale',
+    growth: 'For growing teams and busy stores',
+    agency: 'For agencies managing multiple brands'
+  };
+
+  var currentCycle = 'monthly';
+
+  function formatCount(num) {
+    if (num >= 9999) return 'Unlimited';
+    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+    if (num >= 1000) return (num / 1000).toFixed(num % 1000 === 0 ? 0 : 1) + 'K';
+    return num.toLocaleString();
+  }
+
+  function buildPricingData(currency) {
+    var plans = {};
+    PLAN_ORDER.forEach(function (key) {
+      var p = PLAN_LIMITS[key];
+      var raw = (p.price[currency] !== undefined) ? p.price[currency] : p.price.USD;
+      plans[key] = {
+        whatsapp_replies: p.whatsapp_replies,
+        video_generations: p.video_generations,
+        max_social_platforms: p.max_social_platforms,
+        products_limit: p.products_limit,
+        analytics_enabled: p.analytics_enabled,
+        price_raw: raw,
+        price_annual: Math.round(raw * 12 * 0.80),
+        currency_symbol: CURRENCY_SYMBOLS[currency] || currency
+      };
+    });
+    return plans;
+  }
+
+  function renderPricingCards(plans) {
+    var container = document.getElementById('pricingGrid');
+    container.innerHTML = PLAN_ORDER.map(function (key) {
+      var plan = plans[key];
+      var isFeatured = key === 'creator';
+      var price = currentCycle === 'annual' ? Math.round(plan.price_annual / 12) : plan.price_raw;
+      var ctaLabel = key === 'free' ? 'Start Free' : 'Upgrade Now';
+
+      return (
+        '<div class="pricing-card' + (isFeatured ? ' featured' : '') + '">' +
+          '<div class="pricing-plan-icon">' + PLAN_ICON[key] + '</div>' +
+          '<div class="pricing-plan-name">' + key.charAt(0).toUpperCase() + key.slice(1) + '</div>' +
+          '<div class="pricing-plan-desc">' + PLAN_DESC[key] + '</div>' +
+          '<div class="pricing-price">' +
+            '<span class="pricing-currency">' + plan.currency_symbol + '</span>' +
+            '<span class="pricing-amount">' + price.toLocaleString() + '</span>' +
+            '<span class="pricing-period">/mo</span>' +
+          '</div>' +
+          '<ul class="pricing-features">' +
+            '<li class="pricing-feature">' + checkIcon() + '<span>' + formatCount(plan.whatsapp_replies) + ' WhatsApp replies/mo</span></li>' +
+            '<li class="pricing-feature">' + checkIcon() + '<span>' + formatCount(plan.video_generations) + ' AI videos/mo</span></li>' +
+            '<li class="pricing-feature">' + checkIcon() + '<span>' + plan.max_social_platforms + ' social platforms</span></li>' +
+            '<li class="pricing-feature">' + checkIcon() + '<span>' + formatCount(plan.products_limit) + ' products</span></li>' +
+            (plan.analytics_enabled ? '<li class="pricing-feature">' + checkIcon() + '<span>Advanced analytics</span></li>' : '') +
+          '</ul>' +
+          '<a href="#" class="btn ' + (isFeatured ? 'btn-primary' : 'btn-outline') + ' btn-block">' + ctaLabel + '</a>' +
+        '</div>'
+      );
+    }).join('');
+  }
+
+  function checkIcon() {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>';
+  }
+
+  function setLocationText(countryName, currency) {
+    var el = document.getElementById('locationText');
+    if (!el) return;
+    el.textContent = 'Showing prices for ' + (countryName || 'your region') + ' in ' + currency;
+  }
+
+  function renderDefaultNigeria() {
+    setLocationText('Nigeria', 'NGN');
+    renderPricingCards(buildPricingData('NGN'));
+  }
+
+  // 1. Try the live ZAPIT backend first (server does authoritative IP geolocation)
+  function loadFromBackend() {
+    if (!ZAPIT_API_BASE) return Promise.reject(new Error('No backend configured'));
+    return fetch(ZAPIT_API_BASE + '/pricing/location')
+      .then(function (res) {
+        if (!res.ok) throw new Error('Backend pricing request failed');
+        return res.json();
+      })
+      .then(function (json) {
+        if (!json || !json.success || !json.data) throw new Error('Malformed pricing response');
+        var loc = json.data.location || {};
+        setLocationText(loc.country_name, loc.currency);
+        var plans = {};
+        PLAN_ORDER.forEach(function (key) {
+          var p = json.data.plans && json.data.plans[key];
+          if (!p) throw new Error('Missing plan in backend response');
+          plans[key] = {
+            whatsapp_replies: p.whatsapp_replies,
+            video_generations: p.video_generations,
+            max_social_platforms: p.max_social_platforms,
+            products_limit: p.products_limit,
+            analytics_enabled: p.analytics_enabled,
+            price_raw: p.price_raw,
+            price_annual: p.price_annual,
+            currency_symbol: p.currency_symbol
+          };
+        });
+        renderPricingCards(plans);
+        return true;
+      });
+  }
+
+  // 2. Fall back to direct client-side IP geolocation + built-in pricing table
+  function loadFromClientGeo() {
+    return fetch('https://ipapi.co/json/')
+      .then(function (res) {
+        if (!res.ok) throw new Error('Geo lookup failed');
+        return res.json();
+      })
+      .then(function (geo) {
+        var code = geo && geo.country_code;
+        var currency = COUNTRY_CURRENCY[code] || 'USD';
+        var countryName = (code && COUNTRY_NAMES[code]) || (geo && geo.country_name) || 'your region';
+        setLocationText(countryName, currency);
+        renderPricingCards(buildPricingData(currency));
+        return true;
+      });
+  }
+
+  // 3. Final fallback — default to Nigeria/NGN so the section is never empty
+  function loadPricing() {
+    loadFromBackend()
+      .catch(function () { return loadFromClientGeo(); })
+      .catch(function () { renderDefaultNigeria(); });
+  }
+
+  document.getElementById('btnMonthly').addEventListener('click', function () {
+    currentCycle = 'monthly';
+    this.classList.add('active');
+    document.getElementById('btnAnnual').classList.remove('active');
+    refreshPricingDisplay();
+  });
+  document.getElementById('btnAnnual').addEventListener('click', function () {
+    currentCycle = 'annual';
+    this.classList.add('active');
+    document.getElementById('btnMonthly').classList.remove('active');
+    refreshPricingDisplay();
+  });
+
+  var lastRenderedPlans = null;
+  var originalRenderPricingCards = renderPricingCards;
+  renderPricingCards = function (plans) {
+    lastRenderedPlans = plans;
+    originalRenderPricingCards(plans);
+  };
+  function refreshPricingDisplay() {
+    if (lastRenderedPlans) originalRenderPricingCards(lastRenderedPlans);
+  }
+
+  loadPricing();
+
+})();
+</script>
+
+</body>
+</html>
