@@ -6,7 +6,7 @@
 //
 // Pure functions only — index.js wires them, tests exercise them directly.
 // ────────────────────────────────────────────────────────────────
-import { PLAN_LIMITS } from '../config/plans.js';
+import { PLAN_LIMITS, resolvePlanPrice } from '../config/plans.js';
 
 export const BILLING_CYCLES = {
   monthly: { days: 30, multiplier: 1 },
@@ -22,11 +22,38 @@ export function cycleDays(cycle) {
   return BILLING_CYCLES[normalizeCycle(cycle)].days;
 }
 
-/** Plan price in `currency` (falls back to USD, matching the payment initializer). */
+/**
+ * B-05: resolve what we will actually charge — amount AND the currency it is
+ * charged in. Requesting a currency Paystack cannot settle (GBP/EUR) falls back
+ * to the USD list price and reports USD, so the gateway call, the checkout
+ * display and the webhook verification all agree.
+ * @returns {{amount:number, currency:string, requested_currency:string, converted:boolean, billingCycle:string, amountMinor:number}|null}
+ */
+export function resolveCharge({ plan, currency, billingCycle = 'monthly' }) {
+  const cycle = normalizeCycle(billingCycle);
+  const resolved = resolvePlanPrice(plan, currency);
+  if (!resolved) return null;
+  const amount = resolved.amount * BILLING_CYCLES[cycle].multiplier;
+  return {
+    amount,
+    amountMinor: Math.round(amount * 100),
+    currency: resolved.currency,
+    requested_currency: resolved.requested_currency,
+    converted: resolved.converted,
+    billingCycle: cycle,
+  };
+}
+
+/** Plan price in the resolved charge currency (USD for unsupported currencies). */
 export function planPrice({ plan, currency }) {
-  const p = plan && plan !== 'free' ? PLAN_LIMITS[plan] : null;
-  if (!p) return null;
-  return p.price?.[currency] ?? p.price?.USD ?? null;
+  const resolved = resolvePlanPrice(plan, currency);
+  return resolved ? resolved.amount : null;
+}
+
+/** Currency the plan will actually be charged in for a requested one. */
+export function chargeCurrency({ plan, currency }) {
+  const resolved = resolvePlanPrice(plan, currency);
+  return resolved ? resolved.currency : null;
 }
 
 /**
@@ -34,10 +61,8 @@ export function planPrice({ plan, currency }) {
  * uses in `data.amount` — derived from the plan table, never from the client.
  */
 export function expectedAmountMinor({ plan, currency, billingCycle = 'monthly' }) {
-  const unit = planPrice({ plan, currency });
-  if (unit == null) return null;
-  const total = unit * BILLING_CYCLES[normalizeCycle(billingCycle)].multiplier;
-  return Math.round(total * 100);
+  const charge = resolveCharge({ plan, currency, billingCycle });
+  return charge ? charge.amountMinor : null;
 }
 
 /**
@@ -128,13 +153,28 @@ export function evaluateCharge({ eventData, verifyData } = {}) {
     }
   }
   if (meta.currency && String(meta.currency).toUpperCase() !== currency) return { ok: false, reason: 'currency_mismatch' };
-  const expected = expectedAmountMinor({ plan, currency, billingCycle: cycle });
-  const amountOk = verifyPaymentAmount({ paidMinor, currency, expectedMinor: expected });
+  // B-05: expected charge comes from the same resolver the checkout used, in the
+  // currency Paystack actually charged. A verified currency we would never
+  // charge (GBP/EUR and friends) is not a payment we recognised: refuse and let
+  // the recorded webhook be reconciled by an operator.
+  // `requested_currency` is what the customer's account asked to be billed in
+  // (from our own initialize() call); re-resolving it must land exactly on the
+  // currency Paystack charged.
+  const requested = String(meta.requested_currency || meta.currency || currency || '').toUpperCase();
+  const expected = resolveCharge({ plan, currency: requested, billingCycle: cycle });
+  if (!expected) return { ok: false, reason: 'invalid_plan' };
+  if (expected.currency !== currency) return { ok: false, reason: 'currency_mismatch' };
+  const amountOk = verifyPaymentAmount({ paidMinor, currency, expectedMinor: expected.amountMinor });
   if (!amountOk.ok) return { ok: false, reason: amountOk.reason };
   return {
     ok: true,
     reason: 'ok',
-    grant: { userId, plan, cycle, currency, paidMinor, amountPaid: paidMinor / 100, reference },
+    grant: {
+      userId, plan, cycle,
+      currency: expected.currency,
+      requestedCurrency: expected.requested_currency,
+      paidMinor, amountPaid: paidMinor / 100, reference,
+    },
   };
 }
 

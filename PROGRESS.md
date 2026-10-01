@@ -489,20 +489,48 @@ fixed first — the routing queries themselves could never have worked with it i
 
 ---
 
+## Phase 7.4 — Currency-correct checkout & payment verification (B-05) — Detail
+
+| Task | Finding | Description | Status |
+|------|---------|-------------|--------|
+| 7.4.0 | **B-05** | Four different places priced a plan by hand (`POST /subscription/upgrade`, `POST /subscription/reactivate`, `GET /subscription/plans`, `GET /pricing/location`) and all of them used `price[currency] ?? price.USD` **while keeping the requested currency**: a visitor in the UK/Germany was quoted an annual plan as `£144` / `€144` when the number was the *dollar* price. Paystack also cannot settle GBP/EUR, so the checkout would have failed at the gateway. There is now one resolver (`resolvePlanPrice`) and one charge object (`resolveCharge`) | ✅ Done |
+| 7.4.1 | **B-05** | `PAYSTACK_CURRENCIES = ['NGN','GHS','ZAR','KES','USD']` is the only set of currencies that can be charged (Paystack's settled set). A request outside it resolves to the **USD list price in USD** and is reported as USD — never a USD amount wearing a `£`/`€` symbol. `requested_currency` + `currency_converted` keep the original request traceable | ✅ Done |
+| 7.4.2 | **B-05** | `POST /subscription/upgrade` charges `resolveCharge()` exactly: amount, currency, minor units and cycle all come from the same object that fills the gateway metadata, and the response says `Billed in USD — GBP is not supported by our payment provider.` when a conversion happened. The reactivation checkout uses the identical path | ✅ Done |
+| 7.4.3 | **B-05** | The webhook verifies against the same resolver, not against whatever Paystack reports: the currency Paystack charged must equal the resolved charge currency (`currency_mismatch` otherwise), the amount must equal the resolved minor amount (tolerance 1 minor unit), and the metadata mix (charged + requested currency) must be consistent. A `£12`/`€12` payment can no longer buy a `$12` plan | ✅ Done |
+| 7.4.4 | **B-05** | Display and billing can no longer drift: `index.js` no longer contains a price table lookup at all — `formatPrice`/`getPricingForLocation` are the shared module's implementations, and `/pricing/location` carries `currency`, `currency_symbol`, `requested_currency`, `currency_converted` and a customer-facing `billing_note` | ✅ Done |
+| 7.4.5 | — | Docs: `docs/API.md` currency/amount matrix update; exit criteria + verification below | ✅ Done |
+| 7.4.6 | — | `tests/unit/currency.test.mjs` (14th suite): settleable-currency set, country→currency mapping never lands on GBP/EUR for billing, exact price table for all five charge currencies, GBP/EUR/CAD fallback matrix, annual 9.6× minor-unit maths, checkout/webhook parity for all 3 paid plans × 7 currencies, formatted output carries no wrong symbol, and source-wiring assertions (no `.price[` left in `index.js`). `tests/unit/billing.test.mjs` extended with the GBP/EUR/„€12 is not $12" refusals. `security-check` 116 → **128 checks** | ✅ Done |
+
+**Phase 7.4 Exit criteria:** a customer is only ever charged an amount **and** currency the provider can settle — **PASS ✅**; the amount the webhook verifies equals the amount the checkout initialized — **PASS ✅**; no USD number is ever displayed/stored as GBP/EUR — **PASS ✅**; tests + security checks green — **PASS ✅**.
+
+**Verification (2026-10-01):**
+- `node --input-type=module --check` on `index.js`, `src/config/plans.js`, `src/utils/billing.js` — ✅; `npm test` — **14 suites ✅**; `npm run security:check` — **128/128 ✅** (was 116)
+- `grep` invariants: no `price[currency]`/`?? data.price.USD` lookups remain in `index.js`; every charge path goes through `resolveCharge`; `evaluateCharge` refuses non-chargeable currencies ✅
+- Live dev (port 3089): `GET /pricing/location` returns NGN for NG; the GB/EU fallback is exercised in unit tests (geo-IP spoofing is not trusted without `TRUST_PROXY`), `/subscription/upgrade` unauth → 401
+
+
+### 2026-10-01 — Phase 7.4 Completed ✅ — Currency-correct checkout & payment verification (B-05)
+- **Phase 7.4 — DONE**
+  - `src/config/plans.js`: `PAYSTACK_CURRENCIES` (NGN/GHS/ZAR/KES/USD), `isChargeableCurrency()`, `resolvePlanPrice()` — one source for price + charge currency; GBP/EUR/CAD → the USD price reported as USD with `requested_currency`/`currency_converted`/`billing_note`
+  - `src/utils/billing.js`: `resolveCharge()` (amount + minor units + resolved currency + cycle) is now what `planPrice`/`expectedAmountMinor`/`chargeCurrency`/`evaluateCharge` use; the webhook refuses any currency the checkout would never charge (`currency_mismatch`)
+  - `index.js`: upgrade + reactivation charge the resolver object verbatim; `/subscription/plans` and `/pricing/location` are the shared implementations (no local price lookup or symbol table left)
+  - Tests: new `tests/unit/currency.test.mjs` (14th suite); `billing.test.mjs` extended with the £12/€12 refusals; `security-check` 116 → **128 checks**
+  - **Verification:** `node --check` ✅, `npm test` 14 suites ✅, `security:check` 128/128 ✅, live `/pricing/location` + webhook-auth smoke ✅
+
 ## Final Summary (2026-10-01)
 
 | Metric | Before | After |
 |--------|--------|-------|
 | Critical findings | 11 | 0 |
 | High findings | 14 | 0 |
-| Security check | — | 116/116 ✅ (Phase 7.3) |
-| Tests | 0 | 13 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth, session, cookies, quota) |
+| Security check | — | 128/128 ✅ (Phase 7.4) |
+| Tests | 0 | 14 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth, session, cookies, quota, currency) |
 | Docs | 2 lines | 150+ lines + 5 docs |
-| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 4,071 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE · 7.2 sessions+cookies · 7.3 quotas), modular imports, allowlist, spawn, cache, locks |
+| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 4,071 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE · 7.2 sessions+cookies · 7.3 quotas · 7.4 one price resolver + currency-pinned webhook), modular imports, allowlist, spawn, cache, locks |
 | Frontend | 4× duplicated tokens, hardcode, 45 raw innerHTML | shared.css, pricing.json, DOMPurify+CSP, PWA, a11y focus trap |
-| DB | no migrations | 9 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout, 7.1 OAuth state, 7.2 hashed sessions, 7.3 usage counters) + advisory locks |
+| DB | no migrations | 9 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout, 7.1 OAuth state, 7.2 hashed sessions, 7.3 usage counters) + advisory locks (7.4 needs none — it is a code-only fix) |
 
-**Next steps for the team:** Run `supabase db push` (apply `20261002`…`20261005`, then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`), set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN`, share `GET /whatsapp/qr-code` route codes with free-plan users, apply `20261007` for 7.1, then continue **Phase 7.2–7.5 (tokens, quotas, amounts, analytics)**, before paid traffic per Phase 0 §A.4. Phases 6.1–6.5 closed — **all P0 audit findings + the 6.5 P1s resolved**. 🎉
+**Next steps for the team:** Run `supabase db push` — apply the pending migrations `20261002`…**`20261009`** (`20261001` too if the Phase 4 hardening was never pushed) — then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`; set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN` + `TRUST_PROXY=false` (unless genuinely behind a trusted proxy); share `GET /whatsapp/qr-code` route codes with free-plan users; create the Stripe/RDP-free Paystack account currencies you intend to charge (GBP/EUR are **not** settleable by Paystack — GB/EU customers are billed the USD price as USD); then continue **Phase 7.5 (analytics counts)** → Phase 8 → 9 → 10, before paid traffic per Phase 0 §A.4. Phases 6.1–6.5 + 7.1–7.4 closed — **all P0 audit findings + the 6.5 P1s + B-05/B-06/B-09 resolved**. 🎉
 
 ---
 
@@ -525,6 +553,7 @@ fixed first — the routing queries themselves could never have worked with it i
 | B-04 | No transaction ledger / invoices | P0 | ✅ **FIXED 6.4** (immutable `transactions`, unique reference) |
 | B-07 | Free Agency via API (admin grants unbounded/unaudited) | P0 | ✅ **FIXED 6.4** (1–365 days, audited, webhook refuses free plans) |
 | S-14 | Paystack amount/currency unchecked | P1 | ✅ **FIXED 6.4** (pure `evaluateCharge`; signature+idempotency earlier) |
+| B-05 | USD price sold as £/€ (four hand-rolled price lookups; GBP/EUR are not Paystack currencies) | P1 | ✅ **FIXED 7.4** (one resolver, currency-pinned webhook) |
 | *~38 P1/P2* | OAuth state, JWT 7d, CORS, quotas, S-15 OTP `Math.random`, B-05 currency, B-09 reset, W-01 orders, C-01 social, U-01 etc. | P1/P2 | ⏳ Most **OPEN** → Phases 6.5–10 (sequential, no shortcut) |
 
 **Pending after 6.4:** 6.5 (S-15/S-16/S-13 polish) → Phase 7 (auth/quotas) → 8 (core loop) → 9 (social) → 10 (UX/NDPA). *Finish each stage before next per user direction.*

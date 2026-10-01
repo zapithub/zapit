@@ -26,7 +26,7 @@ import { parsePagination, isValidEmail, isValidUsername, isStrongPassword, sanit
 import { generateOTP, hashOTP, verifyOTPRecord, attemptsAfterFailure, OTP_MAX_ATTEMPTS, OTP_TTL_MS } from './src/utils/otp.js';
 import { verifyMetaSignature, verifyWebhookVerifyToken, claimWebhookEvent } from './src/utils/webhook.js';
 import { generateRouteCode, resolveTenantForInbound, upsertWaCustomerTenant, claimSharedGuidance, resolveSendCreds } from './src/utils/tenantRouting.js';
-import { evaluateCharge, expectedAmountMinor, cancelSubscriptionPlan, reactivateDecision, activationFields, normalizeCycle } from './src/utils/billing.js';
+import { evaluateCharge, resolveCharge, cancelSubscriptionPlan, reactivateDecision, activationFields, normalizeCycle } from './src/utils/billing.js';
 import { newOAuthState, hashState, newPkcePair, stateDecision, sanitizeProviderError, buildAuthorizeUrl, OAUTH_STATE_TTL_MS } from './src/utils/oauth.js';
 import { ACCESS_TOKEN_TTL, ACCESS_TOKEN_TTL_SEC, hashToken, newFamilyId, newSessionRow, legacySessionRow, isSessionReuse, isSessionActive, isMissingColumnError, REUSE_REASON } from './src/utils/session.js';
 import { AUTH_ACCESS_COOKIE, AUTH_REFRESH_COOKIE, parseCookies, isMutating, csrfMatches, setAuthCookies, clearAuthCookies } from './src/utils/cookies.js';
@@ -510,7 +510,6 @@ const COUNTRY_CURRENCY = {
   NG:'NGN', GH:'GHS', KE:'KES', ZA:'ZAR',
   US:'USD', GB:'GBP', CA:'USD', AU:'USD', DE:'EUR', FR:'EUR',
 };
-const CURRENCY_SYMBOLS = { NGN:'₦', GHS:'GH₵', KES:'KSh', ZAR:'R', USD:'$', GBP:'£', EUR:'€' };
 
 // S-13: never read X-Forwarded-For ourselves — Express (trust proxy=1) already
 // resolves the real client address into req.ip. Reading the header directly let
@@ -549,28 +548,10 @@ async function detectLocation(req) {
   }
 }
 
-function formatPrice(amount, currency) {
-  const sym = CURRENCY_SYMBOLS[currency] || currency;
-  return `${sym}${new Intl.NumberFormat('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(amount)}`;
-}
-
-function getPricingForLocation(location) {
-  const { currency } = location;
-  const plans = {};
-  for (const [name, data] of Object.entries(PLAN_LIMITS)) {
-    const raw = data.price[currency] ?? data.price.USD;
-    plans[name] = {
-      name, ...data,
-      price_raw:             raw,
-      price_formatted:       formatPrice(raw, currency),
-      price_annual:          Math.round(raw * 12 * 0.80),
-      price_annual_formatted: formatPrice(raw * 12 * 0.80, currency),
-      currency,
-      currency_symbol: CURRENCY_SYMBOLS[currency] || currency,
-    };
-  }
-  return { location, plans, annual_discount: 0.20 };
-}
+// B-05: pricing lives in src/config/plans.js only — these aliases keep the old
+// call sites but can never drift from the charge rules again.
+const formatPrice           = __srcFormat;
+const getPricingForLocation = __srcGetPricing;
 
 // ─── PAYSTACK ───────────────────────────────────────────────────
 // All gateway calls are time-bounded: a hanging upstream must never wedge a
@@ -3326,12 +3307,15 @@ app.post('/subscription/upgrade', authenticate, async (req, res) => {
     if (!PAYSTACK_SECRET_KEY) return res.status(400).json({ success:false, error:'Payment gateway not configured. Contact support.' });
     const { data:user }  = await supabase.from('users').select('email,full_name,currency').eq('id',req.user.id).single();
     const location       = await detectLocation(req);
-    const currency       = user.currency||location.currency;
-    let amount           = PLAN_LIMITS[plan].price[currency] ?? PLAN_LIMITS[plan].price.USD;
-    if (billing_cycle==='annual') amount = amount*12*0.80;
-    const result = await initializePaystack({ email:user.email, amount, currency, metadata:{ user_id:req.user.id, plan, billing_cycle, currency, amount_minor:Math.round(amount*100), custom_fields:[{ display_name:'Plan', variable_name:'plan', value:plan }] }, callback_url:`${FRONTEND_URL}/pricing.html?plan=${plan}` });
+    const requested      = String(user.currency || location.currency || 'NGN').toUpperCase();
+    // B-05: the charge currency is resolved once — GBP/EUR fall back to a USD
+    // charge reported as USD, never a USD amount wearing a £/€ symbol.
+    const charge = resolveCharge({ plan, currency: requested, billingCycle: billing_cycle });
+    if (!charge) return res.status(400).json({ success:false, error:'This plan is not priced for your currency yet. Contact support.' });
+    const { amount, currency, amountMinor } = charge;
+    const result = await initializePaystack({ email:user.email, amount, currency, metadata:{ user_id:req.user.id, plan, billing_cycle:charge.billingCycle, currency, requested_currency:charge.requested_currency, amount_minor:amountMinor, custom_fields:[{ display_name:'Plan', variable_name:'plan', value:plan }] }, callback_url:`${FRONTEND_URL}/pricing.html?plan=${plan}` });
     if (!result.status) throw new Error(result.message||'Payment init failed');
-    return res.json({ success:true, data:{ payment_url:result.data.authorization_url, reference:result.data.reference, amount, currency, plan }, message:'Redirecting to payment...' });
+    return res.json({ success:true, data:{ payment_url:result.data.authorization_url, reference:result.data.reference, amount, currency, requested_currency:charge.requested_currency, currency_converted:charge.converted, billing_cycle:charge.billingCycle, plan }, message: charge.converted ? `Billed in USD — ${charge.requested_currency} is not supported by our payment provider.` : 'Redirecting to payment...' });
   } catch (err) {
     return res.status(500).json({ success:false, error:err.message||'Failed to initialize payment.' });
   }
@@ -3384,11 +3368,16 @@ app.post('/subscription/reactivate', authenticate, async (req, res) => {
     if (!PAYSTACK_SECRET_KEY) return res.status(400).json({ success:false, error:'Payment gateway not configured. Contact support.' });
     const { data:user } = await supabase.from('users').select('email,full_name,currency').eq('id',req.user.id).single();
     const cycle    = normalizeCycle(sub.billing_cycle || 'monthly');
-    const currency = String(sub.currency || user?.currency || 'NGN').toUpperCase();
-    const amount   = (expectedAmountMinor({ plan: sub.plan, currency, billingCycle: cycle }) ?? 0) / 100;
+    const requested = String(sub.currency || user?.currency || 'NGN').toUpperCase();
+    // B-05: reactivation charges the resolved currency too (a legacy GBP row can
+    // never produce a GBP charge — it resolves to the USD price).
+    const charge   = resolveCharge({ plan: sub.plan, currency: requested, billingCycle: cycle });
+    if (!charge) return res.status(400).json({ success:false, error:'This plan cannot be repurchased automatically. Contact support.' });
+    const amount   = charge.amount;
+    const currency = charge.currency;
     const result   = await initializePaystack({
       email:user?.email || '', amount, currency,
-      metadata:{ user_id:req.user.id, plan:sub.plan, billing_cycle:cycle, currency, amount_minor:Math.round(amount*100), reactivation:true },
+      metadata:{ user_id:req.user.id, plan:sub.plan, billing_cycle:cycle, currency, requested_currency:charge.requested_currency, amount_minor:charge.amountMinor, reactivation:true },
       callback_url:`${FRONTEND_URL}/payment-success`,
     });
     if (!result.status) throw new Error(result.message || 'Payment init failed');

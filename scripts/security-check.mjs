@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ZAPIT — Security smoke check for CI (Phases 1–7.3)
+// ZAPIT — Security smoke check for CI (Phases 1–7.4)
 // Fails (exit 1) if any critical invariant is violated.
 // No external deps, runs on Node 18+.
 
@@ -11,6 +11,9 @@ function fail(msg){ console.error('❌', msg); fails++; }
 function pass(msg){ console.log('✅', msg); }
 
 const indexJs = fs.readFileSync('index.js','utf8');
+const plansJs = fs.readFileSync('src/config/plans.js','utf8');
+const billingJs = fs.readFileSync('src/utils/billing.js','utf8');
+const quotaJs = fs.readFileSync('src/utils/quota.js','utf8');
 const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
 
 // 1. No default weak secrets in source (should use env or effective)
@@ -215,7 +218,7 @@ if (!cancelBlock.includes('cancelSubscriptionPlan(') || !cancelBlock.includes('c
 else pass('Cancel keeps access until period end (B-02)');
 
 // B-04/S-14: webhook validates the paid amount/currency and records the ledger
-if (!indexJs.includes('evaluateCharge(') || !indexJs.includes('expectedAmountMinor(')) fail('Paystack webhook does not verify amount/currency (S-14/B-04)');
+if (!indexJs.includes('evaluateCharge(') || !billingJs.includes('currency_mismatch')) fail('Paystack webhook does not verify amount/currency (S-14/B-04)');
 else pass('Paystack webhook verifies amount/currency (S-14/B-04)');
 if (!indexJs.includes("from('transactions').insert(")) fail('Paystack webhook does not record the transactions ledger (B-04)');
 else pass('Paystack webhook records immutable transactions (B-04)');
@@ -413,6 +416,42 @@ try {
   else pass('Phase 7.3 migration present (period-scoped counters, atomic consume)');
 } catch { fail('quota util or migration missing (B-06)'); }
 
+// ── Phase 7.4 — one price resolver; no amount is ever relabelled (B-05) ──
+try {
+  if (!plansJs.includes('export const PAYSTACK_CURRENCIES')) fail('plans.js lacks the settleable-currency list (B-05)');
+  else if (!/PAYSTACK_CURRENCIES\s*=\s*\[[^\]]*'NGN'[^\]]*'GHS'[^\]]*'ZAR'[^\]]*'KES'[^\]]*'USD'/.test(plansJs)) fail('PAYSTACK_CURRENCIES is not the settled NGN/GHS/ZAR/KES/USD set (B-05)');
+  else pass('Plans declare exactly the currencies Paystack can settle (B-05)');
+  if (!plansJs.includes('export function resolvePlanPrice')) fail('plans.js lacks the single price resolver (B-05)');
+  else if (!plansJs.includes("currency: 'USD'") || !plansJs.includes("converted: wanted !== 'USD'")) fail('resolvePlanPrice does not fall back to a USD charge (B-05)');
+  else pass('resolvePlanPrice falls back to a USD charge, never a relabelled amount (B-05)');
+  if (!plansJs.includes('billing_note')) fail('checkout does not explain the USD fallback (B-05)');
+  else pass('Checkout explains the USD fallback to the customer (B-05)');
+} catch { fail('src/config/plans.js missing (B-05)'); }
+try {
+  if (!billingJs.includes('export function resolveCharge')) fail('billing.js lacks resolveCharge (B-05)');
+  else if (!billingJs.includes('resolvePlanPrice') || !billingJs.includes('amountMinor: Math.round(amount * 100)')) fail('resolveCharge does not reuse the plan resolver in minor units (B-05)');
+  else pass('resolveCharge is the single source of amount + currency (B-05)');
+  if (!billingJs.includes("if (expected.currency !== currency)")) fail('webhook would grant a currency the checkout never charges (B-05)');
+  else pass('evaluateCharge refuses a currency the checkout would never charge (B-05)');
+} catch { fail('src/utils/billing.js missing (B-05)'); }
+try {
+  if (/\.price\[/.test(indexJs)) fail('index.js still looks plan prices up by hand (B-05)');
+  else pass('No hand-rolled price lookups remain in index.js (B-05)');
+  if (!indexJs.includes('resolveCharge({ plan, currency: requested, billingCycle: billing_cycle })')) fail('upgrade does not resolve the charge once (B-05)');
+  else pass('Upgrade charges exactly what resolveCharge returns (B-05)');
+  if (!indexJs.includes('requested_currency:charge.requested_currency')) fail('gateway metadata loses the requested currency (B-05)');
+  else pass('Gateway metadata records both charged and requested currency (B-05)');
+  if (!indexJs.includes('const getPricingForLocation = __srcGetPricing')) fail('pricing display can drift from the resolver again (B-05)');
+  else pass('Pricing display defers to the shared resolver (B-05)');
+  if (!indexJs.includes('resolveCharge({ plan: sub.plan, currency: requested, billingCycle: cycle })')) fail('reactivation bypasses the resolver (B-05)');
+  else pass('Reactivation charges through the same resolver (B-05)');
+} catch { fail('index.js missing for the B-05 checks'); }
+try {
+  const t = fs.readFileSync('tests/unit/currency.test.mjs','utf8');
+  if (!t.includes('never the unsupported currency') || !t.includes('parity')) fail('currency test does not pin the USD fallback and checkout/webhook parity (B-05)');
+  else pass('Currency tests pin the fallback + checkout/webhook parity (B-05)');
+} catch { fail('tests/unit/currency.test.mjs missing (B-05)'); }
+
 // validation single-source + migration
 try {
   const v = fs.readFileSync('src/utils/validation.js','utf8');
@@ -427,8 +466,8 @@ try {
 
 console.log('');
 if (fails) {
-  console.error(`\n${fails} check(s) failed — Phase 7.3 hardening not done.`);
+  console.error(`\n${fails} check(s) failed — Phase 7.4 hardening not done.`);
   process.exit(1);
 } else {
-  console.log('All security checks passed (Phases 1–7.3). ✅');
+  console.log('All security checks passed (Phases 1–7.4). ✅');
 }

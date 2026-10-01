@@ -69,19 +69,53 @@ export function formatPrice(amount, currency) {
   return `${sym}${new Intl.NumberFormat('en-US', { minimumFractionDigits:0, maximumFractionDigits:2 }).format(amount)}`;
 }
 
+// ── B-05: the charge currency is not always the display currency ───
+// Paystack settles NGN, GHS, ZAR, KES and USD only. GBP/EUR are NOT supported,
+// so a UK/EU visitor is charged the USD list price and must SEE USD — showing
+// "£9.60" next to a $12 charge (the old `price[GBP] ?? price.USD`) both misled
+// the customer and would have failed at the gateway.
+export const PAYSTACK_CURRENCIES = ['NGN', 'GHS', 'ZAR', 'KES', 'USD'];
+
+export function isChargeableCurrency(currency) {
+  return PAYSTACK_CURRENCIES.includes(String(currency || '').toUpperCase());
+}
+
+/**
+ * Single source of truth for "what does this plan cost, in which currency".
+ * @returns {{amount:number, currency:string, requested_currency:string, converted:boolean}|null}
+ */
+export function resolvePlanPrice(plan, currency) {
+  const data = PLAN_LIMITS[plan];
+  if (!data || plan === 'free') return null;
+  const wanted = String(currency || 'USD').toUpperCase();
+  const table  = data.price || {};
+  if (isChargeableCurrency(wanted) && Number.isFinite(table[wanted])) {
+    return { amount: table[wanted], currency: wanted, requested_currency: wanted, converted: false };
+  }
+  if (!Number.isFinite(table.USD)) return null;
+  return { amount: table.USD, currency: 'USD', requested_currency: wanted, converted: wanted !== 'USD' };
+}
+
 export function getPricingForLocation(location) {
-  const { currency } = location;
+  const requested = String(location?.currency || 'USD').toUpperCase();
   const plans = {};
   for (const [name, data] of Object.entries(PLAN_LIMITS)) {
-    const raw = data.price[currency] ?? data.price.USD;
+    const resolved = name === 'free'
+      ? { amount: 0, currency: isChargeableCurrency(requested) ? requested : 'USD', requested_currency: requested, converted: !isChargeableCurrency(requested) }
+      : resolvePlanPrice(name, requested);
+    const raw = resolved.amount;
     plans[name] = {
       name, ...data,
       price_raw: raw,
-      price_formatted: formatPrice(raw, currency),
+      price_formatted: formatPrice(raw, resolved.currency),
       price_annual: Math.round(raw * 12 * 0.80),
-      price_annual_formatted: formatPrice(raw * 12 * 0.80, currency),
-      currency,
-      currency_symbol: CURRENCY_SYMBOLS[currency] || currency,
+      price_annual_formatted: formatPrice(raw * 12 * 0.80, resolved.currency),
+      // `currency` stays the DISPLAY currency actually charged, never a symbol we cannot settle.
+      currency: resolved.currency,
+      currency_symbol: CURRENCY_SYMBOLS[resolved.currency] || resolved.currency,
+      requested_currency: resolved.requested_currency,
+      currency_converted: resolved.converted,
+      billing_note: resolved.converted && raw > 0 ? `Billed in USD — ${resolved.requested_currency} is not supported by our payment provider.` : null,
     };
   }
   return { location, plans, annual_discount: 0.20 };

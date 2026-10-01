@@ -71,9 +71,10 @@ See `index.js` for full list (54 routes). OpenAPI 3.1 to be generated from `src/
 Plans: `free`, `creator`, `growth`, `agency` (`src/config/plans.js`). Prices are per currency
 (NGN/GHS/KES/ZAR/USD); **annual = 12 × monthly × 0.80** (20% off), billed 365 days → `billing_cycle: "annual"`.
 
-- `POST /upgrade` `{plan, billing_cycle?}` → Paystack `payment_url`. The signed metadata carries
-  `user_id`, `plan`, `billing_cycle`, `currency` **and `amount_minor`**, so the webhook can verify
-  the charge against the server-side price table. Free plan is not purchasable.
+- `POST /subscription/upgrade` `{plan, billing_cycle?}` → Paystack `payment_url`. Amount and currency come
+  from `resolveCharge()` (see below); the signed metadata carries `user_id`, `plan`, `billing_cycle`,
+  `currency`, `requested_currency` **and `amount_minor`**, so the webhook can re-derive the exact charge.
+  Free plan is not purchasable.
 - `POST /subscription/cancel` → `200 {data:{plan, status:"active", access_until, cancel_at}}`.
   **Access continues until the paid period ends** (`cancel_at = expires_at`, `auto_renew=false`);
   if no paid time remains the subscription is cancelled immediately.
@@ -83,6 +84,28 @@ Plans: `free`, `creator`, `growth`, `agency` (`src/config/plans.js`). Prices are
   - **`402 {success:false, payment_required:true, payment_url, reference, amount, currency, plan, billing_cycle}`**
     when the paid period has ended — a *new* Paystack payment is required before access returns;
   - `404` — no subscription on record.
+### Currency & checkout amounts (Phase 7.4 — B-05)
+
+Paystack can only settle **NGN, GHS, ZAR, KES, USD**. One resolver decides every charge
+(`resolvePlanPrice()` in `src/config/plans.js`, `resolveCharge()` in `src/utils/billing.js`):
+
+| Requested currency | Charged / charged as | Display fields |
+|--------------------|----------------------|----------------|
+| NGN / GHS / ZAR / KES / USD | same currency at that currency's list price | `currency_converted:false`, `billing_note:null` |
+| GBP, EUR, anything else | **USD list price, charged in USD** | `currency:"USD"`, `requested_currency:"GBP"`, `currency_converted:true`, `billing_note:"Billed in USD — GBP is not supported by our payment provider."` |
+
+- `POST /subscription/upgrade` and `POST /subscription/reactivate` initialize Paystack with the resolved
+  `{amount, currency, amount_minor}` and mirror all three in the signed metadata (`currency`,
+  `requested_currency`), so the charge can be re-derived exactly.
+- The webhook grants only when Paystack's verified `currency` **equals the resolved charge currency** and the
+  verified minor amount matches the resolved amount (1 minor-unit tolerance). A charge in a currency we never
+  initialize (GBP/EUR) is refused as `currency_mismatch` and left for operator reconciliation — a `€12`
+  payment can never buy a `$12` plan.
+- `GET /pricing/location` (and `GET /subscription/plans`) expose `price_raw`, `price_formatted`,
+  `price_annual`, `currency`, `currency_symbol`, `requested_currency`, `currency_converted` and
+  `billing_note`, so the UI can never render a USD amount with a `£`/`€` symbol.
+- Annual = `monthly × 9.6` (12 × 0.80) in minor units, computed once — checkout and webhook always agree.
+
 ### WhatsApp connection settings (S-06 follow-up)
 
 `PATCH /whatsapp/settings` accepts business fields plus a **guarded** `wa_phone_number_id`:

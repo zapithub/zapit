@@ -116,7 +116,7 @@ console.log('  ✅ expectedAmountMinor (per plan/currency/cycle, ¥0 free)');
   };
   const ok = evaluateCharge(good);
   assert.equal(ok.ok, true);
-  assert.deepEqual(ok.grant, { userId: 'u-1', plan: 'creator', cycle: 'monthly', currency: 'NGN', paidMinor: 1000000, amountPaid: 10000, reference: 'ref-1' });
+  assert.deepEqual(ok.grant, { userId: 'u-1', plan: 'creator', cycle: 'monthly', currency: 'NGN', requestedCurrency: 'NGN', paidMinor: 1000000, amountPaid: 10000, reference: 'ref-1' });
 
   assert.equal(evaluateCharge({ eventData: good.eventData, verifyData: { ...good.verifyData, status: 'failed' } }).reason, 'not_successful');
   assert.equal(evaluateCharge({ eventData: {}, verifyData: { status: 'success', amount: 1, currency: 'NGN', metadata: meta } }).reason, 'missing_reference');
@@ -131,6 +131,16 @@ console.log('  ✅ expectedAmountMinor (per plan/currency/cycle, ¥0 free)');
   assert.equal(mismatch.reason, 'metadata_mismatch');
   // currency switch attempt: metadata says NGN, charged in USD
   assert.equal(evaluateCharge({ eventData: good.eventData, verifyData: { ...good.verifyData, currency: 'USD' } }).reason, 'currency_mismatch');
+  // B-05: a currency we would never charge is refused outright, even if the
+  // number happens to look like the USD price (€12 is not a $12 plan).
+  assert.equal(evaluateCharge({ eventData: good.eventData, verifyData: { ...good.verifyData, currency: 'EUR', amount: 1200, metadata: { ...meta, currency: 'EUR' } } }).reason, 'currency_mismatch');
+  assert.equal(evaluateCharge({ eventData: good.eventData, verifyData: { ...good.verifyData, currency: 'GBP', amount: 1200, metadata: { ...meta, currency: 'GBP' } } }).reason, 'currency_mismatch');
+  // …and the USD charge a GB/EU visitor is actually given IS granted.
+  const usdMeta = { ...meta, currency: 'USD', requested_currency: 'GBP' };
+  const usdPaid = { eventData: { ...good.eventData, currency: 'USD', amount: 1200, metadata: usdMeta }, verifyData: { ...good.verifyData, currency: 'USD', amount: 1200, metadata: usdMeta } };
+  assert.equal(evaluateCharge(usdPaid).ok, true, 'USD fallback charge grants');
+  assert.equal(evaluateCharge(usdPaid).grant.currency, 'USD');
+  assert.equal(evaluateCharge(usdPaid).grant.requestedCurrency, 'GBP');
   // underpay: ₦1 for a ₦10,000 plan
   assert.equal(evaluateCharge({ eventData: good.eventData, verifyData: { ...good.verifyData, amount: 100 } }).reason, 'amount_mismatch');
   // monthly price does not buy an annual plan
@@ -159,7 +169,10 @@ console.log('  ✅ expectedAmountMinor (per plan/currency/cycle, ¥0 free)');
   assert.ok(index.includes('cancelSubscriptionPlan('), 'cancel uses billing rules');
   assert.ok(index.includes('reactivateDecision('), 'reactivate uses billing rules');
   assert.ok(index.includes('evaluateCharge('), 'webhook uses the pure charge decision');
-  assert.ok(index.includes('expectedAmountMinor('), 'webhook derives the expected price server-side');
+  assert.ok(index.includes('resolveCharge('), 'checkout/reactivation derive the charge from the shared resolver');
+  assert.ok(!/\.price\[/.test(index), 'B-05: no raw price lookups — a USD amount can never be labelled GBP/EUR');
+  const billingSrc = fs.readFileSync('src/utils/billing.js', 'utf8');
+  assert.ok(billingSrc.includes('if (expected.currency !== currency) return { ok: false, reason: \'currency_mismatch\' }'), 'webhook pins the verified currency to the charge currency');
   assert.ok(index.includes("from('transactions').insert("), 'verified payments hit the ledger');
   assert.ok(!/reactivate[\s\S]{0,2000}expires_at:new Date\(Date\.now\(\)\+30\*24\*60\*60\*1000\)/.test(index), 'no free 30-day grant in reactivate');
   assert.ok(!index.includes("plan==='free') return;") === false || true, 'free plan guard is present');
