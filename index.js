@@ -32,6 +32,7 @@ import { ACCESS_TOKEN_TTL, ACCESS_TOKEN_TTL_SEC, hashToken, newFamilyId, newSess
 import { AUTH_ACCESS_COOKIE, AUTH_REFRESH_COOKIE, parseCookies, isMutating, csrfMatches, setAuthCookies, clearAuthCookies } from './src/utils/cookies.js';
 import { METRICS, quotaGuard, consumeQuota, quotaExceededBody, usageSnapshot, metricForContentType, periodStart } from './src/utils/quota.js';
 import { revenueTotals, revenueByDay, contentByType, contactsBySegment, ledgerTotals, fetchAllRows, headlineCurrency, ANALYTICS_MAX_ROWS } from './src/utils/analytics.js';
+import { extractInboundMessages, messageTextOf, classifyOptKeyword, isGreetingOnly, shouldWelcome, isBotPaused, takeoverFields, optOutFields, optInFields, STOP_CONFIRMATION, START_CONFIRMATION } from './src/utils/inbound.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -2401,12 +2402,35 @@ app.post('/whatsapp/conversations/:id/reply', authenticate, async (req, res) => 
     } catch (e) {
       return res.status(400).json({ success:false, error: e.message });
     }
+    let pausedUntil = null;
     if (result.success) {
       await supabase.from('messages').insert({ conversation_id:req.params.id, direction:'outbound', type:'text', content:message, status:'sent' });
-      await supabase.from('conversations').update({ last_message_at:new Date().toISOString() }).eq('id',req.params.id);
+      // W-04: a human is answering — the bot stops replying in this conversation.
+      const takeover = takeoverFields(new Date());
+      const { error:takeErr } = await supabase.from('conversations').update(takeover).eq('id',req.params.id);
+      if (takeErr) {
+        console.warn('[WA takeover unavailable]', takeErr.message);
+        await supabase.from('conversations').update({ last_message_at:takeover.last_message_at }).eq('id',req.params.id);
+      } else {
+        pausedUntil = takeover.bot_paused_until;
+      }
     }
-    return res.json({ success:result.success, message:result.success?'Reply sent!':'Failed to send reply.' });
+    return res.json({ success:result.success, data:{ human_takeover:Boolean(pausedUntil), bot_paused_until:pausedUntil }, message:result.success?'Reply sent! The bot will stay quiet in this chat for 24h.':'Failed to send reply.' });
   } catch { return res.status(500).json({ success:false, error:'Failed to send reply.' }); }
+});
+
+// POST /whatsapp/conversations/:id/resume  — hand the chat back to the bot (W-04)
+app.post('/whatsapp/conversations/:id/resume', authenticate, async (req, res) => {
+  try {
+    const { data:conv } = await supabase.from('conversations').select('id').eq('id',req.params.id).eq('user_id',req.user.id).single();
+    if (!conv) return res.status(404).json({ success:false, error:'Conversation not found.' });
+    const { error } = await supabase.from('conversations').update(resumeFields(new Date())).eq('id',req.params.id).eq('user_id',req.user.id);
+    if (error) {
+      console.warn('[WA resume unavailable]', error.message);
+      return res.json({ success:true, data:{ human_takeover:false, degraded:true }, message:'Bot replies are already active (apply migration 20261011 to make takeover sticky).' });
+    }
+    return res.json({ success:true, data:{ human_takeover:false }, message:'The bot will answer this chat again.' });
+  } catch { return res.status(500).json({ success:false, error:'Failed to resume the conversation.' }); }
 });
 
 // ─── WHATSAPP WEBHOOKS ─────────────────────────────────────────
@@ -2451,135 +2475,172 @@ app.post('/webhook/whatsapp', webhookLimiter, async (req, res) => {
 
   try {
     if (body?.object !== 'whatsapp_business_account') return;
-    const value   = body.entry?.[0]?.changes?.[0]?.value;
-    if (!value?.messages?.length) return;
-
-    const message      = value.messages[0];
-    const contact      = value.contacts?.[0];
-    const phoneNumberId = value.metadata?.phone_number_id;
-    const from         = message.from;
-    const customerName = contact?.profile?.name || 'Customer';
-    const msgId        = message.id;
-    const msgType      = message.type;
-
-    // ── 3. Replay/retry protection: one delivery per wamid (S-05) ──
-    const claimed = await claimWebhookEvent(supabase, 'whatsapp', msgId, { from, type:msgType });
-    if (!claimed) {
-      console.log(JSON.stringify({ level:'info', msg:'wa duplicate delivery skipped', msgId }));
-      return;
+    // W-04: one delivery can carry several entries/changes/messages — Meta
+    // batches them under load. Every message is processed, each deduped by wamid.
+    const inbound = extractInboundMessages(body);
+    if (!inbound.length) return;
+    // Sequential on purpose: draft state, counters and takeover flags must stay
+    // consistent when a burst arrives together.
+    for (const item of inbound) {
+      try { await handleInboundMessage(item); }
+      catch (err) { console.error(JSON.stringify({ level:'error', msg:'wa inbound message failed', msgId:item.msgId, error:err.message })); }
     }
-
-    let msgText = '';
-    if      (msgType==='text')        msgText = message.text?.body||'';
-    else if (msgType==='interactive') msgText = message.interactive?.button_reply?.title||message.interactive?.list_reply?.title||'';
-    else if (['image','video','document','audio'].includes(msgType)) msgText = message[msgType]?.caption||`[${msgType} received]`;
-    if (!msgText) return;
-
-    // ── 4. Deterministic tenant resolution (S-06) — never an arbitrary tenant ──
-    // Order: dedicated number → sticky customer mapping → #CODE discriminator.
-    // Unmatched/ambiguous messages are never processed on behalf of any business.
-    const routing = await resolveTenantForInbound({
-      db: supabase, phoneNumberId, platformPhoneNumberId: WA_PHONE_NUMBER_ID,
-      customerPhone: from, messageText: msgText,
-    });
-
-    if (routing.via === 'ambiguous_individual' || routing.via === 'ambiguous_code') {
-      console.error(JSON.stringify({ level:'error', msg:'wa routing ambiguous — message refused', via:routing.via, phoneNumberId, from, code:routing.code }));
-      return;
-    }
-
-    if (!routing.tenant) {
-      console.warn(JSON.stringify({ level:'warn', msg:'wa routing: no tenant', via:routing.via, phoneNumberId, from, code:routing.code }));
-      // Help a stranger on the shared number find their business (throttled, non-fatal).
-      await maybeSendRoutingGuidance(routing, phoneNumberId, from);
-      return;
-    }
-
-    const businessSettings = routing.tenant;
-    const businessUserId   = businessSettings.user_id;
-    msgText = routing.body || msgText;
-
-    // Remember this customer for the shared number so later messages need no code.
-    if (routing.via === 'code') {
-      await upsertWaCustomerTenant(supabase, { platformPhoneNumberId: phoneNumberId, customerPhone: from, userId: businessUserId });
-    }
-
-    // Upsert contact
-    let { data:contactRecord } = await supabase.from('contacts')
-      .select('*').eq('user_id',businessUserId).eq('phone',from).single();
-    if (!contactRecord) {
-      const { data:nc } = await supabase.from('contacts').insert({ user_id:businessUserId, name:customerName, phone:from, whatsapp_id:from, first_message_date:new Date().toISOString(), last_message_date:new Date().toISOString(), message_count:1, segment:'lead' }).select().single();
-      contactRecord = nc;
-    } else {
-      await supabase.from('contacts').update({ last_message_date:new Date().toISOString(), message_count:(contactRecord.message_count||0)+1, name:contactRecord.name||customerName }).eq('id',contactRecord.id);
-    }
-    if (!contactRecord || contactRecord.is_blocked || contactRecord.opted_out) return;
-
-    // Upsert conversation
-    let { data:conv } = await supabase.from('conversations')
-      .select('*').eq('user_id',businessUserId).eq('contact_id',contactRecord.id).eq('status','open').single();
-    if (!conv) {
-      const { data:nc } = await supabase.from('conversations').insert({ user_id:businessUserId, contact_id:contactRecord.id, whatsapp_conversation_id:`${from}_${businessUserId}`, last_message_at:new Date().toISOString() }).select().single();
-      conv = nc;
-    } else {
-      await supabase.from('conversations').update({ last_message_at:new Date().toISOString() }).eq('id',conv.id);
-    }
-
-    // Log inbound message
-    await supabase.from('messages').insert({ conversation_id:conv?.id, whatsapp_message_id:msgId, direction:'inbound', type:msgType, content:msgText, status:'received' });
-
-    // Auto-reply off → the inbox still records the message, but nothing is sent.
-    if (businessSettings.auto_reply === false) {
-      console.log(JSON.stringify({ level:'info', msg:'wa auto_reply off — inbound stored only', userId:businessUserId }));
-      return;
-    }
-
-    // Check reply limit — B-06: atomic monthly counter (usage_counters) instead of
-    // trusting the lifetime mirror. The mirror below still feeds the analytics view.
-    const { limits } = await getUserSubscription(businessUserId);
-    const replyQuota = await consumeQuota(supabase, { userId:businessUserId, metric:METRICS.REPLY, amount:1, limit:limits.whatsapp_replies });
-    if (!replyQuota.allowed) {
-      console.log(JSON.stringify({ level:'warn', msg:'wa reply quota reached — inbound stored only', userId:businessUserId, used:replyQuota.used, limit:limits.whatsapp_replies }));
-      return;
-    }
-
-    // Explicit send channel (S-06/W-07): tenant's own number, or the platform's
-    // shared number for shared-mode tenants. Never an implicit fallback.
-    let creds = null;
-    try {
-      creds = resolveSendCreds({
-        connectionMethod: businessSettings.connection_method,
-        waPhoneNumberId: businessSettings.wa_phone_number_id,
-        waAccessToken: businessSettings.wa_access_token ? decrypt(businessSettings.wa_access_token) : null,
-      }, { phoneNumberId: WA_PHONE_NUMBER_ID, accessToken: WA_ACCESS_TOKEN });
-    } catch (e) { console.warn('[WA send channel unavailable]', e.message); }
-
-    // Welcome message for first contact
-    if ((contactRecord.message_count||0) <= 1 && businessSettings.welcome_message) {
-      if (creds) {
-        try {
-          await sendWAMessage({ phoneNumberId: creds.phoneNumberId, accessToken: creds.accessToken, to:from, message:businessSettings.welcome_message.replace('{name}',customerName) });
-        } catch (e) { console.warn('[WA welcome skip]', e.message); }
-        await markWARead(msgId, creds.phoneNumberId, creds.accessToken);
-      }
-      return;
-    }
-
-    // Generate AI reply
-    const { response:aiReply } = await processWAMessage({ businessUserId, customerPhone:from, customerMessage:msgText, businessSettings, conversationId:conv?.id });
-
-    // Send reply & log it
-    if (creds) {
-      try {
-        await sendWAMessage({ phoneNumberId: creds.phoneNumberId, accessToken: creds.accessToken, to:from, message:aiReply });
-      } catch (e) { console.warn('[WA AI reply skip]', e.message); }
-    }
-    await supabase.from('messages').insert({ conversation_id:conv?.id, direction:'outbound', type:'text', content:aiReply, status:'sent', ai_processed:true });
-    await supabase.from('business_settings').update({ reply_count:(businessSettings.reply_count||0)+1 }).eq('user_id',businessUserId);
-    if (creds) await markWARead(msgId, creds.phoneNumberId, creds.accessToken);
-
   } catch (err) { console.error('[WA WEBHOOK ERROR]', err.message); }
 });
+
+/**
+ * Handle exactly one inbound WhatsApp message (Phase 8.1 — W-02/W-04).
+ * Routing → contact/conversation state → opt-out/opt-in → human takeover →
+ * welcome (once) → AI reply. Never throws to the webhook: Meta has already been
+ * acknowledged, so a single bad message must not abort the rest of the burst.
+ */
+async function handleInboundMessage({ message, contact:waContact, phoneNumberId, customerName, from, msgId }) {
+  const now        = new Date();
+  const nowIso     = now.toISOString();
+  const msgType    = message.type;
+  const msgTextRaw = messageTextOf(message);
+  if (!msgTextRaw) return;
+
+  // ── Replay/retry protection: one delivery per wamid (S-05) ──
+  const claimed = await claimWebhookEvent(supabase, 'whatsapp', msgId, { from, type:msgType });
+  if (!claimed) {
+    console.log(JSON.stringify({ level:'info', msg:'wa duplicate delivery skipped', msgId }));
+    return;
+  }
+
+  let msgText = msgTextRaw;
+
+  // ── Deterministic tenant resolution (S-06) ──
+  const routing = await resolveTenantForInbound({
+    db: supabase, phoneNumberId, platformPhoneNumberId: WA_PHONE_NUMBER_ID,
+    customerPhone: from, messageText: msgText,
+  });
+  if (routing.via === 'ambiguous_individual' || routing.via === 'ambiguous_code') {
+    console.error(JSON.stringify({ level:'error', msg:'wa routing ambiguous — message refused', via:routing.via, phoneNumberId, from, code:routing.code }));
+    return;
+  }
+  if (!routing.tenant) {
+    console.warn(JSON.stringify({ level:'warn', msg:'wa routing: no tenant', via:routing.via, phoneNumberId, from, code:routing.code }));
+    await maybeSendRoutingGuidance(routing, phoneNumberId, from);
+    return;
+  }
+
+  const businessSettings = routing.tenant;
+  const businessUserId   = businessSettings.user_id;
+  msgText = routing.body || msgText;
+  if (routing.via === 'code') {
+    await upsertWaCustomerTenant(supabase, { platformPhoneNumberId: phoneNumberId, customerPhone: from, userId: businessUserId });
+  }
+
+  // ── Contact upsert — the count is computed, never re-read stale (W-02) ──
+  let { data:contactRecord } = await supabase.from('contacts')
+    .select('*').eq('user_id',businessUserId).eq('phone',from).single();
+  let messageCount = 1;
+  if (!contactRecord) {
+    const { data:nc } = await supabase.from('contacts').insert({ user_id:businessUserId, name:customerName, phone:from, whatsapp_id:from, first_message_date:nowIso, last_message_date:nowIso, message_count:1, segment:'lead' }).select().single();
+    contactRecord = nc;
+  } else {
+    messageCount = (contactRecord.message_count||0) + 1;
+    const { data:updated } = await supabase.from('contacts')
+      .update({ last_message_date:nowIso, message_count:messageCount, name:contactRecord.name||customerName })
+      .eq('id',contactRecord.id).select().single();
+    contactRecord = updated || { ...contactRecord, message_count:messageCount };
+  }
+
+  // ── Conversation upsert (carries the takeover state) ──
+  let { data:conv } = await supabase.from('conversations')
+    .select('*').eq('user_id',businessUserId).eq('contact_id',contactRecord?.id).eq('status','open').single();
+  if (!conv) {
+    const { data:nc } = await supabase.from('conversations').insert({ user_id:businessUserId, contact_id:contactRecord?.id, whatsapp_conversation_id:`${from}_${businessUserId}`, last_message_at:nowIso }).select().single();
+    conv = nc;
+  } else {
+    await supabase.from('conversations').update({ last_message_at:nowIso }).eq('id',conv.id);
+  }
+
+  // ── Log inbound message ──
+  await supabase.from('messages').insert({ conversation_id:conv?.id, whatsapp_message_id:msgId, direction:'inbound', type:msgType, content:msgText, status:'received' });
+
+  // ── Explicit send channel (S-06/W-07): tenant number, or the platform shared number ──
+  let creds = null;
+  try {
+    creds = resolveSendCreds({
+      connectionMethod: businessSettings.connection_method,
+      waPhoneNumberId: businessSettings.wa_phone_number_id,
+      waAccessToken: businessSettings.wa_access_token ? decrypt(businessSettings.wa_access_token) : null,
+    }, { phoneNumberId: WA_PHONE_NUMBER_ID, accessToken: WA_ACCESS_TOKEN });
+  } catch (e) { console.warn('[WA send channel unavailable]', e.message); }
+
+  const send = async (text, { aiProcessed = false } = {}) => {
+    if (!creds) return false;
+    try {
+      await sendWAMessage({ phoneNumberId:creds.phoneNumberId, accessToken:creds.accessToken, to:from, message:text });
+      await supabase.from('messages').insert({ conversation_id:conv?.id, direction:'outbound', type:'text', content:text, status:'sent', ai_processed:aiProcessed });
+      return true;
+    } catch (e) { console.warn('[WA send skip]', e.message); return false; }
+  };
+
+  // ── Opt-out / opt-in keywords (W-04) ─────────────────────────
+  // Honoured even when auto-reply is off: these are compliance messages, not bot
+  // replies, so they never consume the reply quota.
+  const keyword = classifyOptKeyword(msgText);
+  if (keyword.type === 'opt_out') {
+    const alreadyOut = contactRecord?.opted_out === true;
+    await supabase.from('contacts').update(optOutFields(now, `keyword_${keyword.keyword}`)).eq('id',contactRecord.id);
+    if (!alreadyOut) await send(STOP_CONFIRMATION);
+    console.log(JSON.stringify({ level:'info', msg:'wa contact opted out', userId:businessUserId, alreadyOut }));
+    if (creds) await markWARead(msgId, creds.phoneNumberId, creds.accessToken);
+    return;
+  }
+  if (keyword.type === 'opt_in') {
+    const wasOut = contactRecord?.opted_out === true;
+    await supabase.from('contacts').update(optInFields(now)).eq('id',contactRecord.id);
+    if (wasOut) await send(START_CONFIRMATION);
+    console.log(JSON.stringify({ level:'info', msg:'wa contact opted in', userId:businessUserId, wasOut }));
+    if (creds) await markWARead(msgId, creds.phoneNumberId, creds.accessToken);
+    return;
+  }
+  if (contactRecord?.is_blocked || contactRecord?.opted_out) return;
+
+  // Auto-reply off → the inbox still records the message, but nothing is sent.
+  if (businessSettings.auto_reply === false) {
+    console.log(JSON.stringify({ level:'info', msg:'wa auto_reply off — inbound stored only', userId:businessUserId }));
+    return;
+  }
+
+  // ── Human takeover (W-04): the business is handling this chat; stay silent ──
+  if (isBotPaused(conv, now)) {
+    console.log(JSON.stringify({ level:'info', msg:'wa human takeover — bot paused, inbound stored', userId:businessUserId, conversationId:conv?.id }));
+    if (creds) await markWARead(msgId, creds.phoneNumberId, creds.accessToken);
+    return;
+  }
+
+  // ── Reply quota — B-06: atomic monthly counter ──
+  const { limits } = await getUserSubscription(businessUserId);
+  const replyQuota = await consumeQuota(supabase, { userId:businessUserId, metric:METRICS.REPLY, amount:1, limit:limits.whatsapp_replies });
+  if (!replyQuota.allowed) {
+    console.log(JSON.stringify({ level:'warn', msg:'wa reply quota reached — inbound stored only', userId:businessUserId, used:replyQuota.used, limit:limits.whatsapp_replies }));
+    return;
+  }
+
+  // ── Welcome exactly once (W-02), then still answer a real question ──
+  if (shouldWelcome({ welcomeMessage: businessSettings.welcome_message, contact: contactRecord })) {
+    const welcome = String(businessSettings.welcome_message).replace('{name}', customerName);
+    if (await send(welcome)) {
+      await supabase.from('contacts').update({ welcomed_at:nowIso }).eq('id',contactRecord.id);
+    }
+    if (isGreetingOnly(msgText)) {                       // the greeting *is* the opener
+      if (creds) await markWARead(msgId, creds.phoneNumberId, creds.accessToken);
+      return;
+    }
+  }
+
+  // ── Generate & send the AI reply ──
+  const { response:aiReply } = await processWAMessage({ businessUserId, customerPhone:from, customerMessage:msgText, businessSettings, conversationId:conv?.id });
+  await send(aiReply, { aiProcessed:true });
+  await supabase.from('business_settings').update({ reply_count:(businessSettings.reply_count||0)+1 }).eq('user_id',businessUserId);
+  if (creds) await markWARead(msgId, creds.phoneNumberId, creds.accessToken);
+}
+
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ─── SECTION 4: SOCIAL MEDIA / CONTENT ROUTES (22) ───────────

@@ -193,7 +193,25 @@ All errors: `{ success:false, error:"message", requestId:"..." }`. 401 for auth,
   amount/currency/metadata verified via the `/verify` response before any plan is granted (6.4)
 - `GET /webhook/whatsapp` — Meta handshake, `hub.verify_token` compared in constant time (403 otherwise)
 - `POST /webhook/whatsapp` — raw body, `X-Hub-Signature-256` HMAC-SHA256 verified (401 invalid; 503 in
-  production when `WA_APP_SECRET`/`META_APP_SECRET` is missing), replay-protected per `wamid`
+  production when `WA_APP_SECRET`/`META_APP_SECRET` is missing), replay-protected per `wamid`.
+
+### Inbound conversation semantics (Phase 8.1 — W-02/W-04)
+
+- **Every message is processed.** A single Meta delivery can carry many entries → changes → messages
+  (Meta batches them under load); the webhook unpacks them all and handles them **sequentially**, capped at
+  100 per delivery. The old handler read `entry[0].changes[0].value.messages[0]` and dropped the rest.
+- **Each message is deduped by `wamid`** (`webhook_events`), and one failing message never aborts the rest.
+- **Welcome exactly once** per contact (`contacts.welcomed_at`): the old code kept the contact row it read
+  *before* incrementing `message_count`, so message #2 was welcomed again. A greeting-only first message gets
+  only the welcome; any other first message is welcomed **and** answered.
+- **STOP / UNSUBSCRIBE / "do not message"** opt the contact out (`opted_out`, `opted_out_at`,
+  `opt_out_reason`), confirmed once, and are honoured even when auto-reply is off. **START / RESUME** opt
+  back in. Only a bare keyword (≤ 40 chars) counts — "please stop by the shop tomorrow" is a sentence.
+- **Human takeover:** when the business replies through `POST /whatsapp/conversations/:id/reply`, the
+  conversation gets `human_takeover=true` and `bot_paused_until = now + 24h`; the bot then records inbound
+  messages without answering. `POST /whatsapp/conversations/:id/resume` hands the chat back to the bot.
+- Apply migration `20261011_phase8_01_inbound_state.sql`; without it these columns are absent and the
+  features degrade safely (welcome falls back to `message_count`, takeover is inert, the reply still sends).
 
 ## Shared number & tenant routing (S-06)
 

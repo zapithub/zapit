@@ -57,9 +57,9 @@ Our prior `CONSULTANT_REVIEW.md` (47 findings) covered security, architecture, f
 | **B-06** | Most quotas unenforced (text/image/video/contacts) | P1 | M | ✅ **FIXED 7.3** — `usage_counters` + atomic `consume_usage` RPC; text/image/video/carousel/regeneration/broadcast/reply paths metered; over-quota → `403 quota_exceeded`; graceful pre-migration fallback | **DONE 7.3** |
 | **B-09** | Monthly reset `update({reply_count:0})` **no filter** → no-op | P1 | S–M | ✅ **FIXED 7.3** — quotas are period-scoped (no reset needed); the legacy mirror resets via a paged, explicitly filtered `.in('user_id', ids)` under an advisory lock, and stale counters are pruned | **DONE 7.3** |
 | **W-01** | **No order/payment creation at all** | P1 | XL | 🔴 OPEN — `generateOrderNumber` unused, tenant `paystack_secret_key` never read | **Phase 8 (core loop)** |
-| **W-02** | Welcome stale-state (msg 1 & 2 both only welcome) | P1 | M | 🔴 OPEN | Phase 8 |
+| **W-02** | Welcome stale-state (msg 1 & 2 both only welcome) | P1 | M | ✅ **FIXED 8.1** — the count is computed (never the stale row), `contacts.welcomed_at` marks the single welcome, first message is welcomed+answered | **DONE 8.1** |
 | **W-03** | Broadcast free-text outside 24h → fails; scheduled never runs | P1 | L | 🔴 OPEN — scheduled insert no cron | Phase 8 |
-| **W-04** | Webhook: only first message, no dedup, no human-takeover | P1 | M | 🔴 OPEN | Phase 8 |
+| **W-04** | Webhook: only first message, no dedup, no human-takeover | P1 | M | ✅ **FIXED 8.1** — every entry/change/message processed (cap 100) with per-wamid dedup; STOP/START recorded with timestamps; manual reply sets `human_takeover` + a 24h bot pause, releasable via `/resume` | **DONE 8.1** |
 | **C-01** | Meta `accountId=/me.id` wrong (needs Page/IG Business id) | P1 | L | 🔴 OPEN — OAuth still stores `/me.id` | **Phase 9 (rebuild publishing)** |
 | **C-02** | No token refresh anywhere | P1 | L | 🔴 OPEN | Phase 9 |
 | **C-03** | YouTube sends JSON only, no media | P1 | L | 🔴 OPEN | Phase 9 |
@@ -91,7 +91,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 | **7.4** | **P1 — Currency-Correct Checkout & Verification** | B-05 | P1 | M | ✅ **DONE 2026-10-01** — single price resolver; only NGN/GHS/ZAR/KES/USD are charged; GBP/EUR → USD price reported as USD (never relabelled); webhook pins currency + exact minor amount to the resolver; 14 suites, 128/128 checks |
 | **7.5** | **P1 — Exact Analytics Aggregates** | D-05 | P1 | M | ✅ **DONE 2026-10-01** — SQL aggregates + paging fallback (no 1,000-row truncation), per-currency revenue, paginated lists with `meta.has_more`, broken overview cache fixed; migration `20261010`; 15 suites, 138/138 checks |
 | **7** | **P1 — Auth, Quotas, Money Correctness** | S-07, S-08, S-09, S-14, B-05, B-06, B-09, D-05, S-15/16/17, S-12 follow-up | P1 | L | ✅ **DONE 2026-10-01 (7.1–7.5)** — OAuth nonce+PKCE, JWT 15 m + hashed refresh + cookie path, Paystack amount matrix, usage_counters + middleware, filtered reset, exact analytics aggregates | **DONE** |
-| **8** | **P1 — Core Loop: Orders & Payments in Chat** | W-01, W-02, W-03 (templates), W-04 (dedup), W-07 done, N-1/N-2 | P1 | XL | Customer can type quantity/address → order row + `generateOrderNumber` + Paystack link/bank ref → webhook marks `paid` → confirmation; welcome bug fixed; STOP handled; human takeover flag |
+| **8** | **P1 — Core Loop: Orders & Payments in Chat** | W-01, W-02, W-03 (templates), W-04 (dedup), W-07 done, N-1/N-2 | P1 | XL | 🟡 **IN PROGRESS 2026-10-01** — **8.1 DONE** (W-02/W-04: batched ingestion, welcome-once, STOP/START, human takeover, migration `20261011`; 16 suites, 152/152 checks); **8.2 order/payment loop (W-01)** and **8.3 templates + scheduling (W-03)** pending | Phase 8.2–8.3 |
 | **9** | **P1 — Rebuild Social Publishing** | C-01–C-08, P1 | L | Rebuild publishing layer in worker: correct Page/IG ids, long-lived token exchange, refresh job, YouTube multipart, lease-based scheduler (no 5-min window) |
 | **10** | **P1/P2 — UX, Trust, Compliance** | U-01–U-18, §3.6 NDPA, §6 premium system | P1/P2 | L | `U-01` reload not logout (refresh flow), privacy/terms real pages, consent versioned, Today/Sell/Grow/Account IA, `aria-live` etc. already, health `readyz` |
 | **11** | **Observability & Scale Polish** | AR-1–10, §8 SLOs, §9 reliability | P2 | L | Queue (pg-boss), pino + Sentry, `readyz/livez`, chaos checklist, indexes §4.5, retention |
@@ -108,7 +108,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 **PENDING (must still do, in order):**
 - **Phase 6.5 DONE:** S-13, S-15, S-16, S-22 — **all P0 + 6.5 P1s closed** (S-06 in 6.3, B-01/B-02/B-04/B-07 in 6.4, S-05 in 6.2, S-01/S-22/W-07 in 6.1)
 - **Phase 7 complete (7.1–7.5).** Next: **Phase 8** (core loop) → 9 (social) → 10 (UX/NDPA). S-07 closed in 7.1, S-08/S-09 in 7.2, B-06/B-09 in 7.3, B-05 in 7.4, D-05 in 7.5; S-14 closed in 6.4; S-13/S-15/S-16 closed in 6.5
-- **Phase 8:** W-01 core loop (largest), W-02–W-04, N-1/N-2
+- **Phase 8:** 8.1 DONE (W-02/W-04) · **8.2 W-01 core loop (largest) pending** · 8.3 W-03 templates + scheduling pending · N-1/N-2
 - **Phase 9:** C-01–C-08 rebuild
 - **Phase 10:** U-01–U-18, NDPA
 - **Phase 11:** AR-1–10, SLOs
@@ -288,3 +288,18 @@ entirely requires the Phase 7 auth rework (soft-accept + owner notification + CA
 - Real-client proof: 1,001 orders through the actual `@supabase/supabase-js` against a fake PostgREST → RPC-missing path pages to **1,001 / 10,010** (old: 1,000 / 10,000), RPC path returns the same totals in one call with zero row reads — **PASS ✅**
 
 **DONE 7.5:** D-05. **Phase 7 complete (7.1–7.5).** Next: **Phase 8** (core loop) → 9 (social) → 10 (UX/NDPA).
+
+
+## 5i. Phase 8.1 — Exit criteria & evidence (DONE 2026-10-01)
+
+**Deliverables:** `src/utils/inbound.js` (delivery unpacking, keyword classification, welcome decision, takeover gates), `index.js` (batched `handleInboundMessage`, welcome-once, STOP/START, takeover + `/whatsapp/conversations/:id/resume`), `supabase/migrations/20261011_phase8_01_inbound_state.sql` (`welcomed_at`, `opted_out_at`, `opt_out_reason`, `human_takeover`, `bot_paused_until` + indexes), `tests/unit/inbound.test.mjs` (16th suite), `scripts/security-check.mjs` 138 → 152, `docs/API.md` ("Inbound conversation semantics").
+
+**Exit criteria (tracker L60/L62 slices):**
+- every message in a Meta delivery is processed (not just the first) — **PASS ✅** (multi-entry/multi-change test; cap 100; per-wamid dedup retained)
+- welcome is sent exactly once per contact — **PASS ✅** (`welcomed_at` authoritative; the stale-row regression is pinned in the test)
+- STOP/START honoured and recorded — **PASS ✅** (bare-keyword rule, one confirmation, works with auto-reply off, no quota consumption)
+- human takeover flag — **PASS ✅** (manual reply pauses the bot 24h and sets `human_takeover`; `/resume` releases)
+- `npm test` (16 suites) + `npm run security:check` (152/152) + `node --check` green — **PASS ✅ (2026-10-01)**
+- Live batch proof: one signed delivery with 4 messages across 2 entries/3 changes → 4 per-wamid claims + 4 routing decisions in the log (the old handler processed only the first) — **PASS ✅**
+
+**DONE 8.1:** W-02, W-04. **Pending in Phase 8:** 8.2 W-01 (order + payment loop), 8.3 W-03 (templates + scheduling), N-1/N-2 → then 9 (social) → 10 (UX/NDPA).

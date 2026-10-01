@@ -545,20 +545,48 @@ fixed first — the routing queries themselves could never have worked with it i
   - Tests: `tests/unit/analytics.test.mjs` (15th suite, incl. the 1,001-row regression); `security-check` 128 → **138 checks**
   - **Verification:** `node --check` ✅, `npm test` 15 suites ✅, `security:check` 138/138 ✅, live smoke ✅
 
+## Phase 8.1 — Inbound ingestion: every message, once, with consent (W-02, W-04) — Detail
+
+| Task | Finding | Description | Status |
+|------|---------|-------------|--------|
+| 8.1.0 | **W-04** | The webhook read `body.entry[0].changes[0].value.messages[0]` — Meta batches messages (bursts, multiple changes, several entries), so every message after the first was **dropped silently**. `extractInboundMessages()` now unpacks all entries → changes → messages (cap 100/delivery) and they are handled **sequentially** so counters, drafts and takeover state stay consistent | ✅ Done |
+| 8.1.1 | **W-04** | Each message is claimed individually by `wamid` (unchanged S-05 dedup) and one failing message logs and continues — a single bad payload item no longer aborts the rest of the burst | ✅ Done |
+| 8.1.2 | **W-02** | The welcome was re-sent forever: the handler kept the contact row it read *before* incrementing `message_count`, so message #2 looked like the first. The count is now computed (`previous + 1`), the welcome is marked with `contacts.welcomed_at`, and `shouldWelcome()` treats `welcomed_at` as authoritative with `message_count <= 1` as the pre-migration fallback. The first message is welcomed **and** answered (a greeting-only opener gets only the welcome) | ✅ Done |
+| 8.1.3 | **W-04** | **STOP/UNSUBSCRIBE/"do not message"** now opt the contact out (`opted_out`, `opted_out_at`, `opt_out_reason`), with a one-time confirmation, honoured even when `auto_reply` is off and without consuming the reply quota (compliance, not marketing). Only a *bare* keyword (≤ 40 chars, punctuation/emoji stripped) counts — "please stop by the shop tomorrow" is not an unsubscribe. **START/RESUME** opt back in | ✅ Done |
+| 8.1.4 | **W-04** | **Human takeover:** `POST /whatsapp/conversations/:id/reply` sets `human_takeover=true` + `bot_paused_until=now+24h`; while paused the bot records inbound messages but stays silent. `POST /whatsapp/conversations/:id/resume` gives the chat back | ✅ Done |
+| 8.1.5 | — | Migration `20261011_phase8_01_inbound_state.sql` (welcome/opt-out/takeover columns + indexes, idempotent). Without it the code degrades safely: welcome falls back to the count, takeover is inert, replies still send | ✅ Done |
+| 8.1.6 | — | `tests/unit/inbound.test.mjs` (16th suite): batch unpacking incl. the multi-entry regression, message-type text extraction, keyword table (and the sentence non-matches), greeting detection, the **welcome stale-row regression**, takeover windows/expiry, field builders, wiring + migration assertions. `security-check` 138 → **152 checks** | ✅ Done |
+
+**Phase 8.1 Exit criteria:** no message in a delivery is dropped — **PASS ✅**; the welcome is sent exactly once — **PASS ✅**; STOP/START are honoured and recorded — **PASS ✅**; the bot respects a human takeover — **PASS ✅**; tests + security checks green — **PASS ✅**.
+
+**Verification (2026-10-01):**
+- `node --input-type=module --check` on `index.js`/`src/utils/inbound.js` — ✅; `npm test` — **16 suites ✅**; `npm run security:check` — **152/152 ✅** (was 138)
+- `grep` invariants: the single-message read is gone, every message is iterated, opt-out/keyword/takeover gates all wired ✅
+- Live dev (port 3093): webhook signature matrix still 403/401/200 (integration 7/7), health 200, `POST /whatsapp/conversations/:id/resume` unauth → 401
+- Live batch proof: one signed delivery carrying **4 messages across 2 entries and 3 changes** was processed message-by-message — the log shows exactly 4 per-wamid claims and 4 routing decisions (the old handler would have stopped after the first)
+
+### 2026-10-01 — Phase 8.1 Completed ✅ — Inbound ingestion: every message, once, with consent (W-02, W-04)
+- **Phase 8.1 — DONE**
+  - `src/utils/inbound.js`: delivery unpacking, keyword classification, welcome decision, takeover gates (pure)
+  - `index.js`: batched `handleInboundMessage` per message, welcome-once, STOP/START, takeover + `resume` endpoint
+  - Migration `20261011` (welcomed_at / opted_out_at / opt_out_reason / human_takeover / bot_paused_until)
+  - `tests/unit/inbound.test.mjs`; `security-check` 138 → **152 checks**
+  - **Verification:** `node --check` ✅, `npm test` 16 suites ✅, `security:check` 152/152 ✅, live smoke ✅
+
 ## Final Summary (2026-10-01)
 
 | Metric | Before | After |
 |--------|--------|-------|
 | Critical findings | 11 | 0 |
 | High findings | 14 | 0 |
-| Security check | — | 138/138 ✅ (Phase 7.5) |
-| Tests | 0 | 15 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth, session, cookies, quota, currency, analytics) |
+| Security check | — | 152/152 ✅ (Phase 8.1) |
+| Tests | 0 | 16 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth, session, cookies, quota, currency, analytics, inbound) |
 | Docs | 2 lines | 150+ lines + 5 docs |
-| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 4,117 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE · 7.2 sessions+cookies · 7.3 quotas · 7.4 one price resolver + currency-pinned webhook · 7.5 exact analytics aggregates), modular imports, allowlist, spawn, cache, locks |
+| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 4,155 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE · 7.2 sessions+cookies · 7.3 quotas · 7.4 one price resolver + currency-pinned webhook · 7.5 exact analytics aggregates · 8.1 inbound ingestion + consent + takeover), modular imports, allowlist, spawn, cache, locks |
 | Frontend | 4× duplicated tokens, hardcode, 45 raw innerHTML | shared.css, pricing.json, DOMPurify+CSP, PWA, a11y focus trap |
 | DB | no migrations | 10 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout, 7.1 OAuth state, 7.2 hashed sessions, 7.3 usage counters, 7.5 analytics aggregates) + advisory locks (7.4 is code-only) |
 
-**Next steps for the team:** Run `supabase db push` — apply the pending migrations `20261002`…**`20261010`** (`20261001` too if the Phase 4 hardening was never pushed) — then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`; set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN` + `TRUST_PROXY=false` (unless genuinely behind a trusted proxy); share `GET /whatsapp/qr-code` route codes with free-plan users; create the Stripe/RDP-free Paystack account currencies you intend to charge (GBP/EUR are **not** settleable by Paystack — GB/EU customers are billed the USD price as USD); then continue **Phase 7.5 (analytics counts)** → Phase 8 → 9 → 10, before paid traffic per Phase 0 §A.4. Phases 6.1–6.5 + 7.1–7.4 closed — **all P0 audit findings + the 6.5 P1s + B-05/B-06/B-09 resolved**. 🎉
+**Next steps for the team:** Run `supabase db push` — apply the pending migrations `20261002`…**`20261011`** (`20261001` too if the Phase 4 hardening was never pushed) — then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`; set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN` + `TRUST_PROXY=false` (unless genuinely behind a trusted proxy); share `GET /whatsapp/qr-code` route codes with free-plan users; create the Stripe/RDP-free Paystack account currencies you intend to charge (GBP/EUR are **not** settleable by Paystack — GB/EU customers are billed the USD price as USD); then continue **Phase 7.5 (analytics counts)** → Phase 8 → 9 → 10, before paid traffic per Phase 0 §A.4. Phases 6.1–6.5 + 7.1–7.4 closed — **all P0 audit findings + the 6.5 P1s + B-05/B-06/B-09 resolved**. 🎉
 
 ---
 

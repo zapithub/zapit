@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ZAPIT — Security smoke check for CI (Phases 1–7.5)
+// ZAPIT — Security smoke check for CI (Phases 1–8.1)
 // Fails (exit 1) if any critical invariant is violated.
 // No external deps, runs on Node 18+.
 
@@ -452,6 +452,51 @@ try {
   else pass('Currency tests pin the fallback + checkout/webhook parity (B-05)');
 } catch { fail('tests/unit/currency.test.mjs missing (B-05)'); }
 
+// ── Phase 8.1 — every inbound message handled once, honouring opt-out/takeover (W-02/W-04) ──
+try {
+  const inb = fs.readFileSync('src/utils/inbound.js','utf8');
+  for (const fn of ['extractInboundMessages','messageTextOf','classifyOptKeyword','shouldWelcome','isBotPaused','takeoverFields'])
+    if (!inb.includes(`export function ${fn}`)) fail(`inbound util lacks ${fn} (W-02/W-04)`);
+  if (!inb.includes('OPT_OUT_KEYWORDS') || !inb.includes('OPT_IN_KEYWORDS')) fail('inbound util lacks opt-out/opt-in vocabulary (W-04)');
+  else pass('Inbound util defines opt-out/opt-in keywords (W-04)');
+  if (!inb.includes('norm.length > 40')) fail('a long sentence could be treated as a bare keyword (W-04)');
+  else pass('Only a bare keyword opts a customer out (W-04)');
+  if (!inb.includes('welcomed_at') || !inb.includes('message_count')) fail('welcome decision ignores the once-only marker (W-02)');
+  else pass('Welcome is decided from welcomed_at + the fresh count (W-02)');
+} catch { fail('src/utils/inbound.js missing (W-02/W-04)'); }
+try {
+  if (!indexJs.includes('extractInboundMessages(body)')) fail('the webhook still reads only the first message (W-04)');
+  else pass('The webhook processes every message in the delivery (W-04)');
+  if (indexJs.includes("body.entry?.[0]?.changes?.[0]?.value")) fail('the single-message read is back (W-04)');
+  else pass('No single-message read remains (W-04)');
+  if (!indexJs.includes('for (const item of inbound)')) fail('batched messages are not iterated (W-04)');
+  else pass('Batched messages are handled sequentially (W-04)');
+  if (!indexJs.includes('async function handleInboundMessage(')) fail('inbound handling is not isolated per message (W-04)');
+  else pass('Each message is handled in isolation (W-04)');
+  if (!indexJs.includes('classifyOptKeyword(msgText)') || !indexJs.includes('optOutFields(now,')) fail('STOP is not honoured (W-04)');
+  else pass('STOP/UNSUBSCRIBE opt the customer out (W-04)');
+  if (!indexJs.includes('isBotPaused(conv, now)')) fail('human takeover does not silence the bot (W-04)');
+  else pass('Human takeover silences the bot (W-04)');
+  if (!indexJs.includes('takeoverFields(new Date())')) fail('a manual reply does not take over the conversation (W-04)');
+  else pass('A manual reply takes over the conversation (W-04)');
+  if (!indexJs.includes("app.post('/whatsapp/conversations/:id/resume'")) fail('takeover cannot be released (W-04)');
+  else pass('Takeover can be released (W-04)');
+  if (!indexJs.includes("update({ welcomed_at:nowIso })")) fail('the welcome is never marked as sent (W-02)');
+  else pass('The welcome is marked as sent exactly once (W-02)');
+} catch { fail('index.js missing for the inbound checks'); }
+try {
+  const mig = fs.readFileSync('supabase/migrations/20261011_phase8_01_inbound_state.sql','utf8');
+  const cols = ['welcomed_at','opted_out_at','opt_out_reason','human_takeover','bot_paused_until'];
+  const missing = cols.filter(c => !mig.includes(c));
+  if (missing.length) fail(`Phase 8.1 migration lacks: ${missing.join(', ')}`);
+  else pass('Phase 8.1 migration present (welcome/opt-out/takeover columns)');
+} catch { fail('Phase 8.1 migration file missing'); }
+try {
+  const t = fs.readFileSync('tests/unit/inbound.test.mjs','utf8');
+  if (!t.includes('the stale row is exactly what the old code used')) fail('inbound test does not pin the welcome regression (W-02)');
+  else pass('Inbound test pins the welcome-once regression (W-02)');
+} catch { fail('tests/unit/inbound.test.mjs missing (W-02/W-04)'); }
+
 // ── Phase 7.5 — analytics aggregates are exact, never a capped page (D-05) ──
 try {
   const a = fs.readFileSync('src/utils/analytics.js','utf8');
@@ -504,8 +549,8 @@ try {
 
 console.log('');
 if (fails) {
-  console.error(`\n${fails} check(s) failed — Phase 7.5 hardening not done.`);
+  console.error(`\n${fails} check(s) failed — Phase 8.1 hardening not done.`);
   process.exit(1);
 } else {
-  console.log('All security checks passed (Phases 1–7.5). ✅');
+  console.log('All security checks passed (Phases 1–8.1). ✅');
 }
