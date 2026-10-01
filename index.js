@@ -22,7 +22,8 @@ import { fileURLToPath } from 'url';
 import { PLAN_LIMITS as __SRC_PLAN_LIMITS, getPricingForLocation as __srcGetPricing, formatPrice as __srcFormat } from './src/config/plans.js';
 import { subscriptionCache } from './src/utils/cache.js';
 import { withAdvisoryLock } from './src/utils/distributedLock.js';
-import { parsePagination } from './src/utils/validation.js';
+import { parsePagination, isValidEmail, isValidUsername, isStrongPassword, sanitizeStr, validateBody, pickFields } from './src/utils/validation.js';
+import { generateOTP, hashOTP, verifyOTPRecord, attemptsAfterFailure, OTP_MAX_ATTEMPTS, OTP_TTL_MS } from './src/utils/otp.js';
 import { verifyMetaSignature, verifyWebhookVerifyToken, claimWebhookEvent } from './src/utils/webhook.js';
 import { generateRouteCode, resolveTenantForInbound, upsertWaCustomerTenant, claimSharedGuidance, resolveSendCreds } from './src/utils/tenantRouting.js';
 import { evaluateCharge, expectedAmountMinor, cancelSubscriptionPlan, reactivateDecision, activationFields, normalizeCycle } from './src/utils/billing.js';
@@ -149,8 +150,13 @@ const PLAN_LIMITS = __SRC_PLAN_LIMITS; // Phase 2: single source
 // ─── EXPRESS SETUP ──────────────────────────────────────────────
 const app = express();
 
-// Trust proxy when behind Render / Nginx (needed for correct req.ip and secure cookies)
-app.set('trust proxy', 1);
+// S-12/S-13: trust the platform proxy (Render = 1 hop) so req.ip is the real client.
+// Set TRUST_PROXY=false when the app is exposed directly (then X-Forwarded-For is
+// ignored entirely), or to the exact hop count behind other proxies.
+const TRUST_PROXY_ENV = process.env.TRUST_PROXY;
+app.set('trust proxy', TRUST_PROXY_ENV === undefined ? 1
+  : TRUST_PROXY_ENV === 'false' ? false
+  : (Number.isInteger(Number(TRUST_PROXY_ENV)) && Number(TRUST_PROXY_ENV) >= 0 ? Number(TRUST_PROXY_ENV) : 1));
 
 // Request ID + structured logging
 app.use((req, _res, next) => {
@@ -274,43 +280,15 @@ function decrypt(text) {
   } catch { return null; }
 }
 
-function generateOTP()         { return Math.floor(100000 + Math.random() * 900000).toString(); }
-function hashOTP(code)         { return crypto.createHash('sha256').update(String(code)).digest('hex'); }
 function generateReferralCode() { return crypto.randomBytes(5).toString('hex').toUpperCase(); } // 10 chars, 40 bits — stronger
 function generateOrderNumber()  { return `ZAP-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`; }
 function sleep(ms)              { return new Promise(r => setTimeout(r, ms)); }
+// S-15: same latency for "account exists" and "account does not exist".
+function uniformDelay()         { return sleep(crypto.randomInt(150, 350)); }
 
-// ─── VALIDATION & SANITIZATION (Phase 1) ────────────────────────
-const MAX_STR = { short: 120, medium: 500, long: 2000, bio: 5000 };
-function isValidEmail(e) { return typeof e === 'string' && /^[^s@]+@[^s@]+\.[^s@]+$/.test(e) && e.length <= 254; }
-function isValidUsername(u) { return typeof u === 'string' && /^[a-zA-Z0-9_]{3,30}$/.test(u); }
-function isStrongPassword(p) {
-  if (typeof p !== 'string' || p.length < 8 || p.length > 128) return 'Password must be 8-128 characters.';
-  if (!/[A-Z]/.test(p) || !/[a-z]/.test(p) || !/[0-9]/.test(p)) return 'Password must include uppercase, lowercase and a number.';
-  if (/^(.)\1+$/.test(p)) return 'Password is too weak.';
-  return null;
-}
-function sanitizeStr(s, max = 500) {
-  if (typeof s !== 'string') return '';
-  return s.trim().slice(0, max).replace(/[<>]/g, '');
-}
-function escapeForLog(s) { return String(s).replace(/[\n\r]/g, ' '); }
-function validateBody(schema, data) {
-  const errors = [];
-  for (const [key, rule] of Object.entries(schema)) {
-    const val = data[key];
-    if (rule.required && (val === undefined || val === null || String(val).trim() === '')) {
-      errors.push(`${key} is required.`); continue;
-    }
-    if (val === undefined || val === null) continue;
-    if (rule.type && typeof val !== rule.type) { errors.push(`${key} must be a ${rule.type}.`); continue; }
-    if (rule.min && String(val).length < rule.min) errors.push(`${key} must be at least ${rule.min} chars.`);
-    if (rule.max && String(val).length > rule.max) errors.push(`${key} must be at most ${rule.max} chars.`);
-    if (rule.pattern && !rule.pattern.test(String(val))) errors.push(rule.message || `${key} is invalid.`);
-    if (rule.validate) { const msg = rule.validate(val); if (msg) errors.push(msg); }
-  }
-  return errors;
-}
+// Phase 6.5: validation helpers are imported from src/utils/validation.js.
+// (The removed local isValidEmail had a regex that rejected every address
+// containing the letter "s".)
 function requestLogger(req, _res, next) {
   const start = Date.now();
   const safeUrl = req.originalUrl.split('?')[0];
@@ -468,18 +446,40 @@ const COUNTRY_CURRENCY = {
 };
 const CURRENCY_SYMBOLS = { NGN:'₦', GHS:'GH₵', KES:'KSh', ZAR:'R', USD:'$', GBP:'£', EUR:'€' };
 
+// S-13: never read X-Forwarded-For ourselves — Express (trust proxy=1) already
+// resolves the real client address into req.ip. Reading the header directly let
+// anyone spoof their country (currency arbitrage + a free geo-lookup proxy).
+const DEFAULT_LOCATION = { country_code:'NG', country_name:'Nigeria', city:'Lagos', currency:'NGN', timezone:'Africa/Lagos' };
+const geoCache = new Map(); // ip → { at, value }; bounded TTL cache (also caps ipapi.co usage)
+const GEO_TTL_MS = 30 * 60 * 1000;
+
+function clientIp(req) {
+  return String(req.ip || req.socket?.remoteAddress || '').replace('::ffff:', '');
+}
+function isPrivateIp(ip) {
+  if (!ip) return true;
+  if (ip === '::1' || ip === '127.0.0.1') return true;
+  if (/^10\./.test(ip) || /^192\.168\./.test(ip)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
+  if (/^(fc|fd)[0-9a-f]{2}:/i.test(ip)) return true; // IPv6 ULA
+  return false;
+}
+
 async function detectLocation(req) {
-  const raw = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || '';
-  const ip  = raw.replace('::ffff:', '');
-  const isLocal = !ip || ip === '127.0.0.1' || ip === '::1' || ip.startsWith('192.168') || ip.startsWith('10.');
-  if (isLocal) return { country_code:'NG', country_name:'Nigeria', city:'Lagos', currency:'NGN', timezone:'Africa/Lagos' };
+  const ip = clientIp(req);
+  if (isPrivateIp(ip)) return { ...DEFAULT_LOCATION };
+  const hit = geoCache.get(ip);
+  if (hit && Date.now() - hit.at < GEO_TTL_MS) return hit.value;
   try {
-    const r    = await fetch(`https://ipapi.co/${ip}/json/`, { headers: { 'User-Agent':'zapit-backend/3.0' } });
+    const r    = await fetch(`https://ipapi.co/${encodeURIComponent(ip)}/json/`, { headers: { 'User-Agent':'zapit-backend/3.0' }, signal: AbortSignal.timeout(5000) });
     const data = await r.json();
     const currency = COUNTRY_CURRENCY[data.country_code] || 'USD';
-    return { country_code: data.country_code || 'NG', country_name: data.country_name || 'Nigeria', city: data.city || 'Lagos', currency, timezone: data.timezone || 'Africa/Lagos' };
+    const value = { country_code: data.country_code || 'NG', country_name: data.country_name || 'Nigeria', city: data.city || 'Lagos', currency, timezone: data.timezone || 'Africa/Lagos' };
+    if (geoCache.size > 500) geoCache.clear();
+    geoCache.set(ip, { at: Date.now(), value });
+    return value;
   } catch {
-    return { country_code:'NG', country_name:'Nigeria', city:'Lagos', currency:'NGN', timezone:'Africa/Lagos' };
+    return { ...DEFAULT_LOCATION };
   }
 }
 
@@ -1226,11 +1226,14 @@ app.post('/auth/register', authLimiter, async (req, res) => {
     if (isReservedUsername(username))
       return res.status(400).json({ success:false, error:'This username is reserved. Please choose another.' });
 
-    const { data: existEmail } = await supabase.from('users').select('id').eq('email', email.toLowerCase()).single();
-    if (existEmail) return res.status(409).json({ success:false, error:'An account with this email already exists.' });
-
-    const { data: existUser } = await supabase.from('users').select('id').eq('username', username.toLowerCase()).single();
-    if (existUser) return res.status(409).json({ success:false, error:'This username is already taken.' });
+    const [{ data: existEmail }, { data: existUser }] = await Promise.all([
+      supabase.from('users').select('id').eq('email', email.toLowerCase()).single(),
+      supabase.from('users').select('id').eq('username', username.toLowerCase()).single(),
+    ]);
+    if (existEmail || existUser) {
+      // S-15: one neutral message — never disclose WHICH identifier is taken.
+      return res.status(409).json({ success:false, error:'We could not create an account with these details. If you already have an account, log in or reset your password — otherwise try a different email and username.' });
+    }
 
     let referrerId = null;
     if (referral_code) {
@@ -1248,7 +1251,7 @@ app.post('/auth/register', authLimiter, async (req, res) => {
       full_name:     full_name || username,
       referral_code: generateReferralCode(),
       referred_by:   referrerId,
-      country_code:  country_code || location.country_code,
+      country_code:  (country_code && COUNTRY_CURRENCY[String(country_code).toUpperCase()]) ? String(country_code).toUpperCase() : location.country_code,
       currency:      location.currency,
       timezone:      location.timezone,
       email_verified: false,
@@ -1270,7 +1273,7 @@ app.post('/auth/register', authLimiter, async (req, res) => {
     }
 
     const otp = generateOTP();
-    await supabase.from('otp_verifications').insert({ email:email.toLowerCase(), code:hashOTP(otp), type:'email_verify', expires_at:new Date(Date.now() + 10*60*1000).toISOString() });
+    await supabase.from('otp_verifications').insert({ email:email.toLowerCase(), code:hashOTP(otp), type:'email_verify', expires_at:new Date(Date.now() + OTP_TTL_MS).toISOString() });
     await sendOTPEmail(email.toLowerCase(), otp, 'verify');
 
     const { accessToken, refreshToken } = generateTokens(user.id, user.username);
@@ -1300,7 +1303,7 @@ app.post('/auth/login', authLimiter, async (req, res) => {
     if (!isValidEmail(email)) return res.status(400).json({ success:false, error:'Valid email is required.' });
     if (String(password).length > 128) return res.status(400).json({ success:false, error:'Password too long.' });
 
-    const { data: user } = await supabase.from('users').select('*').eq('email', email.toLowerCase()).single();
+    const { data: user } = await supabase.from('users').select(SAFE_USER_SELECT + ',password_hash').eq('email', email.toLowerCase()).single();
     if (!user) return res.status(401).json({ success:false, error:'Invalid email or password.' });
     if (user.is_suspended)  return res.status(403).json({ success:false, error:`Account suspended: ${user.suspension_reason || 'Contact support.'}` });
     if (!user.is_active)    return res.status(403).json({ success:false, error:'Account deactivated. Contact support.' });
@@ -1346,23 +1349,26 @@ app.post('/auth/verify-email', otpLimiter, async (req, res) => {
     const { email, code } = req.body;
     if (!email || !code) return res.status(400).json({ success:false, error:'Email and code are required.' });
 
-    const codeHash = hashOTP(String(code));
-    const { data: otp } = await supabase.from('otp_verifications').select('*')
-      .eq('email', email.toLowerCase()).eq('code', codeHash).eq('type','email_verify').eq('verified',false)
-      .gt('expires_at', new Date().toISOString())
+    if (!isValidEmail(email)) return res.status(400).json({ success:false, error:'Valid email is required.' });
+
+    // S-15: read the newest code for this address (select('*') keeps this
+    // working before the `attempts` migration is applied) and decide in one place.
+    const { data: record } = await supabase.from('otp_verifications').select('*')
+      .eq('email', email.toLowerCase()).eq('type','email_verify')
       .order('created_at', { ascending:false }).limit(1).single();
 
-    if (!otp) {
-      // Track failed attempts — check recent failures for this email (best-effort)
-      try {
-        const since = new Date(Date.now()-15*60*1000).toISOString();
-        const { count:failCount } = await supabase.from('otp_verifications').select('id',{count:'exact',head:true}).eq('email', email.toLowerCase()).gt('created_at', since);
-        if ((failCount||0) >= 5) return res.status(429).json({ success:false, error:'Too many failed attempts. Request a new code in 15 minutes.' });
-      } catch {}
+    const decision = verifyOTPRecord({ record, codeHash: hashOTP(String(code)) });
+    if (decision.reason === 'locked') {
+      return res.status(429).json({ success:false, error:'Too many failed attempts for this code. Request a new one.' });
+    }
+    if (!decision.ok) {
+      if (record && !record.verified) {
+        try { await supabase.from('otp_verifications').update({ attempts: attemptsAfterFailure(record) }).eq('id', record.id); } catch {}
+      }
       return res.status(400).json({ success:false, error:'Invalid or expired code. Please request a new one.' });
     }
 
-    await supabase.from('otp_verifications').update({ verified:true }).eq('id', otp.id);
+    await supabase.from('otp_verifications').update({ verified:true }).eq('id', record.id);
     await supabase.from('users').update({ email_verified:true }).eq('email', email.toLowerCase());
     return res.json({ success:true, message:'Email verified! Your account is now active.' });
   } catch {
@@ -1379,7 +1385,7 @@ app.post('/auth/resend-otp', otpLimiter, async (req, res) => {
     if (!['email_verify','password_reset'].includes(type)) return res.status(400).json({ success:false, error:'Invalid OTP type.' });
     await supabase.from('otp_verifications').update({ verified:true }).eq('email', email.toLowerCase()).eq('type', type).eq('verified',false);
     const otp = generateOTP();
-    await supabase.from('otp_verifications').insert({ email:email.toLowerCase(), code:hashOTP(otp), type, expires_at:new Date(Date.now()+10*60*1000).toISOString() });
+    await supabase.from('otp_verifications').insert({ email:email.toLowerCase(), code:hashOTP(otp), type, expires_at:new Date(Date.now()+OTP_TTL_MS).toISOString() });
     await sendOTPEmail(email.toLowerCase(), otp, type === 'email_verify' ? 'verify' : 'reset');
     return res.json({ success:true, message:'Verification code sent! Check your email.' });
   } catch {
@@ -1392,12 +1398,16 @@ app.post('/auth/forgot-password', otpLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ success:false, error:'Email is required.' });
+    if (!isValidEmail(email)) return res.status(400).json({ success:false, error:'Valid email is required.' });
     const { data: user } = await supabase.from('users').select('id').eq('email', email.toLowerCase()).single();
     if (user) {
       const otp = generateOTP();
-      await supabase.from('otp_verifications').insert({ email:email.toLowerCase(), code:hashOTP(otp), type:'password_reset', expires_at:new Date(Date.now()+10*60*1000).toISOString() });
-      await sendOTPEmail(email.toLowerCase(), otp, 'reset');
+      await supabase.from('otp_verifications').insert({ email:email.toLowerCase(), code:hashOTP(otp), type:'password_reset', expires_at:new Date(Date.now()+OTP_TTL_MS).toISOString() });
+      // Deliver in the background: the response must not take longer for a
+      // registered address than for an unknown one (S-15 timing oracle).
+      sendOTPEmail(email.toLowerCase(), otp, 'reset').then(undefined, e => console.warn('[otp email]', e.message));
     }
+    await uniformDelay();
     return res.json({ success:true, message:"If this email exists, a reset code has been sent." });
   } catch {
     return res.status(500).json({ success:false, error:'Failed to process request.' });
@@ -1412,22 +1422,26 @@ app.post('/auth/reset-password', authLimiter, async (req, res) => {
     const pwdErr2 = isStrongPassword(new_password);
     if (pwdErr2) return res.status(400).json({ success:false, error: pwdErr2 });
 
-    const codeHash2 = hashOTP(String(code));
-    const { data: otp } = await supabase.from('otp_verifications').select('*')
-      .eq('email', email.toLowerCase()).eq('code', codeHash2).eq('type','password_reset').eq('verified',false)
-      .gt('expires_at', new Date().toISOString()).single();
-    if (!otp) {
-      try {
-        const since2 = new Date(Date.now()-15*60*1000).toISOString();
-        const { count:fail2 } = await supabase.from('otp_verifications').select('id',{count:'exact',head:true}).eq('email', email.toLowerCase()).gt('created_at', since2);
-        if ((fail2||0) >= 5) return res.status(429).json({ success:false, error:'Too many failed attempts. Request a new code in 15 minutes.' });
-      } catch {}
+    if (!isValidEmail(email)) return res.status(400).json({ success:false, error:'Valid email is required.' });
+
+    const { data: record } = await supabase.from('otp_verifications').select('*')
+      .eq('email', email.toLowerCase()).eq('type','password_reset')
+      .order('created_at',{ ascending:false }).limit(1).single();
+
+    const decision = verifyOTPRecord({ record, codeHash: hashOTP(String(code)) });
+    if (decision.reason === 'locked') {
+      return res.status(429).json({ success:false, error:'Too many failed attempts for this code. Request a new one.' });
+    }
+    if (!decision.ok) {
+      if (record && !record.verified) {
+        try { await supabase.from('otp_verifications').update({ attempts: attemptsAfterFailure(record) }).eq('id', record.id); } catch {}
+      }
       return res.status(400).json({ success:false, error:'Invalid or expired reset code.' });
     }
 
     const password_hash = await bcrypt.hash(new_password, 12);
     await supabase.from('users').update({ password_hash, updated_at:new Date().toISOString() }).eq('email', email.toLowerCase());
-    await supabase.from('otp_verifications').update({ verified:true }).eq('id', otp.id);
+    await supabase.from('otp_verifications').update({ verified:true }).eq('id', record.id);
     const { data: user } = await supabase.from('users').select('id').eq('email', email.toLowerCase()).single();
     if (user) await supabase.from('sessions').delete().eq('user_id', user.id);
     return res.json({ success:true, message:'Password reset successfully. Please log in.' });
@@ -1867,8 +1881,21 @@ app.patch('/whatsapp/products/:id', authenticate, async (req, res) => {
   try {
     const { data:existing } = await supabase.from('products').select('id').eq('id',req.params.id).eq('user_id',req.user.id).single();
     if (!existing) return res.status(404).json({ success:false, error:'Product not found.' });
-    const updates = { ...req.body, updated_at:new Date().toISOString() };
-    delete updates.id; delete updates.user_id;
+    // S-16: explicit allow-list — user_id, id and unknown columns can never be written.
+    const { values, errors } = pickFields(req.body, {
+      name:           { type:'string', max:120, min:1 },
+      description:    { type:'string', max:1000, nullable:true },
+      price:          { type:'number', min:0, max:10000000 },
+      sale_price:     { type:'number', min:0, max:10000000, nullable:true },
+      currency:       { type:'string', max:10, min:3 },
+      type:           { type:'string', max:20, enum:['physical','digital','service'] },
+      stock_quantity: { type:'number', integer:true, min:0, nullable:true },
+      category:       { type:'string', max:60, nullable:true },
+      image_url:      { type:'string', max:500, nullable:true },
+    });
+    if (errors.length) return res.status(400).json({ success:false, error:errors[0] });
+    if (!Object.keys(values).length) return res.status(400).json({ success:false, error:'No valid fields to update.' });
+    const updates = { ...values, updated_at:new Date().toISOString() };
     const { data, error } = await supabase.from('products').update(updates).eq('id',req.params.id).select().single();
     if (error) throw error;
     return res.json({ success:true, data, message:'Product updated!' });
@@ -1954,16 +1981,25 @@ app.patch('/whatsapp/orders/:id', authenticate, async (req, res) => {
   try {
     const { data:existing } = await supabase.from('orders').select('*').eq('id',req.params.id).eq('user_id',req.user.id).single();
     if (!existing) return res.status(404).json({ success:false, error:'Order not found.' });
-    const updates = { ...req.body, updated_at:new Date().toISOString() };
-    delete updates.id; delete updates.user_id;
+    // S-16: operational fields only — payment_status, paid_at, total, order_number
+    // and customer_phone are NOT writable through this route.
+    const { values, errors } = pickFields(req.body, {
+      status:          { type:'string', max:20, enum:['pending','confirmed','processing','shipped','delivered','cancelled','refunded'] },
+      delivery_status: { type:'string', max:24, enum:['pending','packed','shipped','out_for_delivery','delivered','returned'] },
+    });
+    if (errors.length) return res.status(400).json({ success:false, error:errors[0] });
+    if (!Object.keys(values).length) return res.status(400).json({ success:false, error:'No valid fields to update.' });
+    const updates = { ...values, updated_at:new Date().toISOString() };
     const { data, error } = await supabase.from('orders').update(updates).eq('id',req.params.id).select().single();
     if (error) throw error;
-    if (req.body.status && req.body.status !== existing.status && existing.customer_whatsapp) {
+    const statusChanged   = values.status !== undefined && values.status !== existing.status;
+    const deliveryChanged = values.delivery_status !== undefined && values.delivery_status !== existing.delivery_status;
+    if ((statusChanged || deliveryChanged) && existing.customer_whatsapp) {
       const { data:s } = await supabase.from('business_settings').select('*').eq('user_id',req.user.id).single();
       let msg = '';
-      if (req.body.status==='confirmed')              msg = `✅ Order ${existing.order_number} confirmed! We're processing it now.`;
-      if (req.body.delivery_status==='shipped')       msg = `🚚 Order ${existing.order_number} is on its way!`;
-      if (req.body.delivery_status==='delivered')     msg = `🎉 Order ${existing.order_number} delivered! Thank you for shopping with us.`;
+      if (values.status==='confirmed')                msg = `✅ Order ${existing.order_number} confirmed! We're processing it now.`;
+      if (values.delivery_status==='shipped')         msg = `🚚 Order ${existing.order_number} is on its way!`;
+      if (values.delivery_status==='delivered')       msg = `🎉 Order ${existing.order_number} delivered! Thank you for shopping with us.`;
       if (msg && s) {
         try {
           const creds = resolveSendCreds({ connectionMethod:s.connection_method, waPhoneNumberId:s.wa_phone_number_id, waAccessToken:s.wa_access_token?decrypt(s.wa_access_token):null }, { phoneNumberId:WA_PHONE_NUMBER_ID, accessToken:WA_ACCESS_TOKEN });
@@ -2050,9 +2086,17 @@ app.get('/whatsapp/contacts/:id', authenticate, async (req, res) => {
 // PATCH /whatsapp/contacts/:id
 app.patch('/whatsapp/contacts/:id', authenticate, async (req, res) => {
   try {
-    const updates = { ...req.body, updated_at:new Date().toISOString() };
-    delete updates.id; delete updates.user_id;
-    await supabase.from('contacts').update(updates).eq('id',req.params.id).eq('user_id',req.user.id);
+    // S-16: allow-list — counters (message_count, total_orders) are never client-writable.
+    const { values, errors } = pickFields(req.body, {
+      name:       { type:'string', max:120, nullable:true },
+      segment:    { type:'string', max:20, enum:['lead','customer','vip','inactive'] },
+      is_blocked: { type:'boolean' },
+      opted_out:  { type:'boolean' },
+      notes:      { type:'string', max:1000, nullable:true },
+    });
+    if (errors.length) return res.status(400).json({ success:false, error:errors[0] });
+    if (!Object.keys(values).length) return res.status(400).json({ success:false, error:'No valid fields to update.' });
+    await supabase.from('contacts').update({ ...values, updated_at:new Date().toISOString() }).eq('id',req.params.id).eq('user_id',req.user.id);
     return res.json({ success:true, message:'Contact updated!' });
   } catch { return res.status(500).json({ success:false, error:'Failed to update contact.' }); }
 });
@@ -2090,14 +2134,17 @@ app.post('/whatsapp/knowledge-base', authenticate, async (req, res) => {
 // PATCH /whatsapp/knowledge-base/:id
 app.patch('/whatsapp/knowledge-base/:id', authenticate, async (req, res) => {
   try {
-    const updates = { ...req.body, updated_at:new Date().toISOString() };
-    delete updates.id; delete updates.user_id;
-    if (updates.trigger !== undefined) updates.trigger = sanitizeStr(updates.trigger, 200).toLowerCase();
-    if (updates.response !== undefined) updates.response = sanitizeStr(updates.response, 2000);
-    if (updates.category !== undefined) updates.category = sanitizeStr(updates.category, 60);
-    if (updates.language !== undefined) updates.language = sanitizeStr(updates.language, 10);
-    if (updates.trigger !== undefined && !updates.trigger) return res.status(400).json({ success:false, error:'Trigger cannot be empty.' });
-    if (updates.response !== undefined && !updates.response) return res.status(400).json({ success:false, error:'Response cannot be empty.' });
+    // S-16: system columns (auto_learned, needs_approval) are not client-writable.
+    const { values, errors } = pickFields(req.body, {
+      trigger:   { type:'string', max:200, min:1, lowercase:true },
+      response:  { type:'string', max:2000, min:1 },
+      category:  { type:'string', max:60, nullable:true },
+      language:  { type:'string', max:10 },
+      is_active: { type:'boolean' },
+    });
+    if (errors.length) return res.status(400).json({ success:false, error:errors[0] });
+    if (!Object.keys(values).length) return res.status(400).json({ success:false, error:'No valid fields to update.' });
+    const updates = { ...values, updated_at:new Date().toISOString() };
     const { data, error } = await supabase.from('knowledge_base').update(updates).eq('id',req.params.id).eq('user_id',req.user.id).select().single();
     if (error) throw error;
     return res.json({ success:true, data, message:'Entry updated!' });
@@ -2845,9 +2892,27 @@ app.get('/content/calendar/automations', authenticate, async (req, res) => {
 // PATCH /content/calendar/automations/:id
 app.patch('/content/calendar/automations/:id', authenticate, async (req, res) => {
   try {
-    const updates = { ...req.body, updated_at:new Date().toISOString() };
-    delete updates.id; delete updates.user_id;
-    await supabase.from('content_calendar').update(updates).eq('id',req.params.id).eq('user_id',req.user.id);
+    // S-16: allow-list — next_generation_at / counters stay server-owned.
+    const { values, errors } = pickFields(req.body, {
+      name:         { type:'string', max:120, min:1 },
+      frequency:    { type:'string', max:20, enum:['daily','3x_week','weekly'] },
+      platforms:    { type:'array', of:'string', maxItems:6, enum:['instagram','tiktok','facebook','youtube','twitter'] },
+      content_type: { type:'string', max:20, enum:['image','video','text','carousel'] },
+      topics:       { type:'array', of:'string', itemMax:120, maxItems:10 },
+      tone:         { type:'string', max:30, enum:['professional','casual','friendly','funny','inspirational','urgent'] },
+      language:     { type:'string', max:10, enum:['en','pidgin'] },
+      timezone:     { type:'string', max:60 },
+      days_of_week: { type:'array', of:'string', itemMax:3, maxItems:7 },
+      times_of_day: { type:'array', of:'string', itemMax:5, maxItems:6 },
+      is_active:    { type:'boolean' },
+    });
+    if (errors.length) return res.status(400).json({ success:false, error:errors[0] });
+    if (values.times_of_day && values.times_of_day.some(t => !/^\d{1,2}:\d{2}$/.test(t)))
+      return res.status(400).json({ success:false, error:'times_of_day must use HH:MM format.' });
+    if (values.platforms && !values.platforms.length)
+      return res.status(400).json({ success:false, error:'Select at least one platform.' });
+    if (!Object.keys(values).length) return res.status(400).json({ success:false, error:'No valid fields to update.' });
+    await supabase.from('content_calendar').update({ ...values, updated_at:new Date().toISOString() }).eq('id',req.params.id).eq('user_id',req.user.id);
     return res.json({ success:true, message:'Automation updated!' });
   } catch { return res.status(500).json({ success:false, error:'Failed to update automation.' }); }
 });
@@ -2873,8 +2938,17 @@ app.patch('/content/brand-voice', authenticate, async (req, res) => {
   try {
     const { limits } = await getUserSubscription(req.user.id);
     if (!limits.brand_voice_enabled) return res.status(403).json({ success:false, error:'Brand Voice is available on Creator plan and above.' });
-    const payload = { ...req.body, user_id:req.user.id, updated_at:new Date().toISOString() };
-    delete payload.id;
+    // S-16: allow-list — no user_id / id / unknown columns from the body.
+    const { values, errors } = pickFields(req.body, {
+      tone:            { type:'string', max:30, enum:['professional','casual','friendly','funny','inspirational','urgent'] },
+      writing_style:   { type:'string', max:120, nullable:true },
+      emoji_usage:     { type:'string', max:20, enum:['none','minimal','moderate','heavy'] },
+      target_audience: { type:'string', max:200, nullable:true },
+      forbidden_words: { type:'array', of:'string', itemMax:60, maxItems:50 },
+    });
+    if (errors.length) return res.status(400).json({ success:false, error:errors[0] });
+    if (!Object.keys(values).length) return res.status(400).json({ success:false, error:'No valid fields to save.' });
+    const payload = { ...values, user_id:req.user.id, updated_at:new Date().toISOString() };
     const { data:existing } = await supabase.from('brand_voice').select('id').eq('user_id',req.user.id).single();
     const result = existing
       ? await supabase.from('brand_voice').update(payload).eq('user_id',req.user.id).select().single()
@@ -3477,7 +3551,18 @@ app.post('/admin/global-kb', authenticate, adminLimiter, requireAdmin, async (re
 // PATCH /admin/global-kb/:id
 app.patch('/admin/global-kb/:id', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
-    const { data, error } = await supabase.from('global_kb_library').update(req.body).eq('id',req.params.id).select().single();
+    // S-16: even admin routes use an allow-list.
+    const { values, errors } = pickFields(req.body, {
+      trigger:  { type:'string', max:200, min:1, lowercase:true },
+      response: { type:'string', max:2000, min:1 },
+      category: { type:'string', max:60, nullable:true },
+      industry: { type:'string', max:60 },
+      language: { type:'string', max:10 },
+      is_active:{ type:'boolean' },
+    });
+    if (errors.length) return res.status(400).json({ success:false, error:errors[0] });
+    if (!Object.keys(values).length) return res.status(400).json({ success:false, error:'No valid fields to update.' });
+    const { data, error } = await supabase.from('global_kb_library').update(values).eq('id',req.params.id).select().single();
     if (error) throw error;
     return res.json({ success:true, data, message:'Global keyword updated.' });
   } catch { return res.status(500).json({ success:false, error:'Failed to update keyword.' }); }

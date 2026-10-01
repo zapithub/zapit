@@ -31,6 +31,25 @@ All authenticated routes require `Authorization: Bearer <accessToken>`.
 
 See `index.js` for full list (54 routes). OpenAPI 3.1 to be generated from `src/utils/validation.js` SCHEMAS (Phase 5 TODO: `npm run openapi:generate`).
 
+## Input validation, OTP & client location (Phase 6.5 — S-13/S-15/S-16)
+
+- **PATCH allow-lists.** Every update route accepts only its documented fields
+  (`pickFields`). System columns (`id`, `user_id`, `payment_status`, `total`, `order_number`,
+  counters, `auto_learned`, …) are unreachable from a request body; unknown fields are ignored
+  and a body with no valid field returns `400 No valid fields to update.` Wrong types, enums,
+  ranges and array shapes return `400` with a single readable reason.
+- **Order updates** accept only `status` (`pending|confirmed|processing|shipped|delivered|cancelled|refunded`)
+  and `delivery_status` (`pending|packed|shipped|out_for_delivery|delivered|returned`); payment fields
+  move only through `POST /whatsapp/orders/:id/confirm-payment` or the Paystack webhook.
+- **OTP.** Codes are 6-digit CSPRNG values (`crypto.randomInt`), stored sha256-hashed, valid 10 minutes.
+  Five wrong guesses kill the code (`429 Too many failed attempts…`); a used code can never be replayed;
+  a new code is issued by `/auth/resend-otp`. `/auth/forgot-password` always answers
+  `If this email exists…` at a uniform latency, and registration never discloses which
+  identifier already exists.
+- **Location/pricing.** `GET /pricing/location` and `GET /subscription/plans` derive the country from
+  the proxy-aware client IP (`req.ip`); `X-Forwarded-For` values from clients are ignored, so billing
+  currency cannot be chosen by header spoofing.
+
 ## Billing & subscriptions (Phase 6.4 — B-01/B-02/B-04/B-07)
 
 Plans: `free`, `creator`, `growth`, `agency` (`src/config/plans.js`). Prices are per currency

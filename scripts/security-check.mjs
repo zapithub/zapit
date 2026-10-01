@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ZAPIT — Security smoke check for CI (Phases 1–6.4)
+// ZAPIT — Security smoke check for CI (Phases 1–6.5)
 // Fails (exit 1) if any critical invariant is violated.
 // No external deps, runs on Node 18+.
 
@@ -255,10 +255,57 @@ try {
   else pass('Phase 6.4 migration present');
 } catch { fail('Phase 6.4 migration file missing'); }
 
+// ── 25. Phase 6.5 — S-13 / S-15 / S-16 ──────────────────────────
+// S-16: no mass assignment anywhere
+if (indexJs.includes('...req.body')) fail('request body is spread into a DB payload (S-16)');
+else pass('No request-body spread into DB payloads (S-16)');
+if (/\.update\(req\.body\)/.test(indexJs)) fail('update(req.body) mass assignment (S-16)');
+else pass('No update(req.body) mass assignment (S-16)');
+{
+  const picks = (indexJs.match(/pickFields\(/g) || []).length;
+  if (picks < 7) fail(`only ${picks} PATCH routes use pickFields (S-16)`);
+  else pass(`All ${picks} PATCH routes use validated allow-lists (S-16)`);
+}
+if (!indexJs.includes("select(SAFE_USER_SELECT + ',password_hash')")) fail('login does not use an explicit user DTO (S-22)');
+else pass('Login uses an explicit user DTO (S-22)');
+
+// S-15: crypto OTP + real lockout
+if (/function generateOTP|Math\.random\(\)\s*\*\s*900000/.test(indexJs)) fail('OTP still generated with Math.random (S-15)');
+else pass('No Math.random OTP generator (S-15)');
+if (!indexJs.includes('verifyOTPRecord(') || !indexJs.includes('attemptsAfterFailure(')) fail('OTP verify flows have no per-code lockout (S-15)');
+else pass('OTP verify flows enforce a per-code lockout (S-15)');
+try {
+  const otp = fs.readFileSync('src/utils/otp.js','utf8');
+  if (!otp.includes('crypto.randomInt') || !otp.includes('timingSafeEqual') || !otp.includes('OTP_MAX_ATTEMPTS')) fail('otp util lacks crypto primitives (S-15)');
+  else pass('otp util is crypto-strong (S-15)');
+} catch { fail('src/utils/otp.js missing (S-15)'); }
+if (!indexJs.includes('uniformDelay(')) fail('password reset is timing-distinguishable (S-15)');
+else pass('Forgot-password uses a uniform response delay (S-15)');
+
+// S-13: client IP only via Express
+if (indexJs.includes("x-forwarded-for")) fail('X-Forwarded-For still read directly (S-13)');
+else pass('X-Forwarded-For is never read directly (S-13)');
+if (!indexJs.includes('clientIp(req)') || !indexJs.includes('isPrivateIp(')) fail('client IP resolution not centralised (S-13)');
+else pass('Client IP resolution uses req.ip with private-range handling (S-13)');
+if (!indexJs.includes("process.env.TRUST_PROXY")) fail('proxy trust is not operator-configurable (S-13)');
+else pass('Proxy trust is configurable via TRUST_PROXY (S-13)');
+
+// validation single-source + migration
+try {
+  const v = fs.readFileSync('src/utils/validation.js','utf8');
+  if (!v.includes('export function pickFields')) fail('validation util lacks pickFields (S-16)');
+  else pass('validation util exposes pickFields (S-16)');
+} catch { fail('src/utils/validation.js missing'); }
+try {
+  const mig = fs.readFileSync('supabase/migrations/20261006_phase6_05_hardening.sql','utf8');
+  if (!mig.includes('attempts') || !mig.includes('idx_otp_email_type')) fail('Phase 6.5 migration missing OTP lockout');
+  else pass('Phase 6.5 migration present');
+} catch { fail('Phase 6.5 migration file missing'); }
+
 console.log('');
 if (fails) {
-  console.error(`\n${fails} check(s) failed — Phase 6.4 not done.`);
+  console.error(`\n${fails} check(s) failed — Phase 6.5 not done.`);
   process.exit(1);
 } else {
-  console.log('All security checks passed (Phases 1–6.4). ✅');
+  console.log('All security checks passed (Phases 1–6.5). ✅');
 }

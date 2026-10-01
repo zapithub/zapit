@@ -1,6 +1,6 @@
 # ZAPIT — Phase 0 Master Audit → Tracker (New Attachment)
 **Source:** `ZAPIT — Master Codebase Audit, Architecture Review & World-Class Upgrade Blueprint` (30 Sep 2026, Phase 0, no code modified) — pasted by user 2026-10-01  
-**Current codebase:** `arena/01a0f67b-zapit` after Phases 1–5 + **6.1–6.3** (47 findings → 0 Critical, plus new audit: S-01/S-02/S-05/S-06/S-22/W-07 + **W-14 (new)** now FIXED, `npm test` 7 suites + `security:check` 55/55 + live E2E)  
+**Current codebase:** `arena/01a0f67b-zapit` after Phases 1–5 + **6.1–6.5** (47 findings → 0 Critical, plus new audit: S-01/S-02/S-05/S-06/S-13/S-15/S-16/S-22/W-07 + **W-14 (new)** all FIXED, `npm test` 9 suites + `security:check` 84/84 + live E2E)  
 **Rule:** Do in phases, report Done vs Pending, no shortcut, finish stage before next. This file is the single source of truth for the **NEW** audit.
 
 > **Evidence labels per §0.1:** FACT/OBSERVATION/RISK/RECOMMENDATION as in Phase 0. Priorities P0/P1/P2/P3 as in §12.
@@ -49,7 +49,7 @@ Our prior `CONSULTANT_REVIEW.md` (47 findings) covered security, architecture, f
 | **S-10** | Open CORS (`cb(null,true)`) + CSP disabled | P1 | S–M | ✅ FIXED Phase 1 (allowlist, HSTS) — CSP meta added Phase 3, still `unsafe-inline` (needs split) |
 | **S-11** | `50mb` JSON + 50 MB multer memory | P1 | S | ✅ FIXED Phase 1 (1mb JSON, 10MB/1 file) — still memory, needs streaming |
 | **S-12** | No `trust proxy` → one bucket for all users | P1 | S | ✅ FIXED Phase 1 (`trust proxy 1`) |
-| **S-13** | `X-Forwarded-For[0]` → currency arbitrage | P1 | S | 🔴 OPEN — still `req.headers['x-forwarded-for'].split(',')[0]` trusted |
+| **S-13** | `X-Forwarded-For[0]` → currency arbitrage | P1 | S | ✅ **FIXED 6.5** — `detectLocation` uses proxy-aware `req.ip` (+ private-range handling, bounded 30-min geo cache, 5 s timeout); the header is never read | ✅ 2026-10-01 |
 | **S-14** | Paystack no amount/currency check, no idempotency | P1 | M | 🟡 PARTIAL — idempotency added, **amount/currency not checked** | Phase 7 |
 | **B-02** | `cancel` drops access immediately vs promise period-end | P1 | S | ✅ **FIXED 6.4** — `cancel` keeps `status='active'`, sets `cancel_at = expires_at` (access retained to period end) | ✅ 2026-10-01 |
 | **B-03** | No recurring billing/dunning | P1 | L | 🔴 OPEN — `auto_renew` flag no worker | Phase 9 |
@@ -66,8 +66,8 @@ Our prior `CONSULTANT_REVIEW.md` (47 findings) covered security, architecture, f
 | **C-04** | IG URL/30s sleep, FB ignores video, TikTok `PULL_FROM_URL` unverified | P1 | L | 🔴 OPEN | Phase 9 |
 | **C-05** | Automation `next_generation_at` never set, caption-only | P1 | M | 🔴 OPEN | Phase 9 |
 | **D-05** | 1,000-row truncation in analytics/revenue | P1 | S–M | 🟡 PARTIAL — pagination max 100 added in Phase 2, but analytics still `count` then `select` loops that can truncate | Phase 7 |
-| **S-15** | OTP `Math.random`, plaintext, no per-code lockout, email existence oracle | P1 | S | 🟡 PARTIAL — `hashOTP` + 5/15m, still `Math.random` | Phase 7 |
-| **S-16** | Mass assignment (`{...req.body}`) on 7 PATCH routes | P1 | S | 🟡 PARTIAL — some allow-lists, but `products/:id`, `orders/:id`, `contacts/:id`, `brand-voice` still spread | Phase 7 |
+| **S-15** | OTP `Math.random`, plaintext, no per-code lockout, email existence oracle | P1 | S | ✅ **FIXED 6.5** — `crypto.randomInt` codes, sha256 at rest, real per-code lockout (5 wrong guesses → 429, code dead), constant-time compare, uniform forgot-password latency, neutral register message | ✅ 2026-10-01 |
+| **S-16** | Mass assignment (`{...req.body}`) on 7 PATCH routes | P1 | S | ✅ **FIXED 6.5** — `pickFields()` allow-lists with type/enum/range validation on all 7 routes (+ admin global-kb); ids, `user_id`, `payment_status`, totals, counters are unreachable | ✅ 2026-10-01 |
 | **…** | *Remaining P1/P2s (S-17–S-28, D-01–D-11, U-01–U-18 etc.)* | — | — | See full Phase 0 §12 — most remain **OPEN** | Phases 7–10 |
 
 **Count:** P0 **9** items → 3 fixed, 6 open. P1 **~35** → ~7 fixed, ~28 open. P2/P3 remain.
@@ -84,7 +84,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 | **6.2** | **P0 — WhatsApp Webhook Authenticity** | S-05 (HMAC), S-25/S-06 related | P0 | S | ✅ **DONE 2026-10-01** — raw body captured, `X-Hub-Signature-256` HMAC `timingSafeEqual`, 401 invalid / 503 prod-missing-secret, wamid replay dedup, constant-time handshake; 6 suites + 28/28 + live E2E (401/403/200/503) |
 | **6.3** | **P0 — Tenant Routing & Shared-Mode Safety** | S-06, partial W-04, **W-14 (new)** | P0 | M | ✅ **DONE 2026-10-01** — discriminator `#CODE` + sticky `wa_customer_tenant`; UNIQUE(wa_phone_number_id) for individual + UNIQUE route codes; notebook test: 2 shared tenants, no code → **no tenant**, `#CODE` → correct one; **plus W-14**: 43 broken `.catch` on Supabase builders fixed (0 remain) |
 | **6.4** | **P0 — Billing Free-Grant Kill** | B-01, B-02, B-04, B-07 | P0 | S–M | ✅ **DONE 2026-10-01** — 71 security checks, 8 test suites, live E2E (401 / 400 / acked-but-refused bogus charge); migration `20261005` |
-| **6.5** | **P0/P1 — Data Leak & Injection Hardening** | S-22, S-16, S-03 follow-up, S-15 OTP, S-13 XFF | P0/P1 | M | `users` DTO allow-list; `crypto.randomInt` OTP; allow-list PATCH; `XFF` uses `req.ip` (trust proxy) |
+| **6.5** | **P0/P1 — Data Leak & Injection Hardening** | S-22, S-16, S-03 follow-up, S-15 OTP, S-13 XFF | P0/P1 | M | ✅ **DONE 2026-10-01** — `pickFields` allow-lists, `crypto.randomInt` + lockout, `req.ip` for location, login DTO; migration `20261006`; 9 suites, 84/84 checks |
 | **7** | **P1 — Auth, Quotas, Money Correctness** | S-07, S-08, S-09, S-14, B-05, B-06, B-09, D-05, S-15/16/17, S-12 follow-up | P1 | L | OAuth nonce+PKCE, JWT 15m + hashed refresh, httpOnly cookie path documented, Paystack amount matrix, usage_counters + middleware, reset cron filtered, analytics `count` not truncated |
 | **8** | **P1 — Core Loop: Orders & Payments in Chat** | W-01, W-02, W-03 (templates), W-04 (dedup), W-07 done, N-1/N-2 | P1 | XL | Customer can type quantity/address → order row + `generateOrderNumber` + Paystack link/bank ref → webhook marks `paid` → confirmation; welcome bug fixed; STOP handled; human takeover flag |
 | **9** | **P1 — Rebuild Social Publishing** | C-01–C-08, P1 | L | Rebuild publishing layer in worker: correct Page/IG ids, long-lived token exchange, refresh job, YouTube multipart, lease-based scheduler (no 5-min window) |
@@ -101,14 +101,14 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 - S-02, S-03, S-04, S-10, S-12, S-11, CORS/HSTS, trust proxy, OTP hash/lockout (partial), CORS, product/KB/broadcast quotas partially, pagination max 100, subscriptionCache, distributedLock, DOMPurify+CSP meta, PWA, pricing.json single source, transactions/webhook_events tables in migration, 4 unit suites, Dockerfile, CI.
 
 **PENDING (must still do, in order):**
-- **Phase 6.5 (P0 polish):** S-16, S-15, S-13 — **S-06 DONE in 6.3**, **B-01/B-02/B-04/B-07 DONE in 6.4**, S-05 DONE in 6.2, S-01/S-22/W-07 DONE in 6.1
-- **Phase 7:** S-07, S-08, S-09, B-05/B-06/B-09, D-05, etc. (S-14 closed in 6.4)
+- **Phase 6.5 DONE:** S-13, S-15, S-16, S-22 — **all P0 + 6.5 P1s closed** (S-06 in 6.3, B-01/B-02/B-04/B-07 in 6.4, S-05 in 6.2, S-01/S-22/W-07 in 6.1)
+- **Phase 7:** S-07, S-08, S-09, B-05/B-06/B-09, D-05, etc. (S-14 closed in 6.4; S-13/S-15/S-16 closed in 6.5)
 - **Phase 8:** W-01 core loop (largest), W-02–W-04, N-1/N-2
 - **Phase 9:** C-01–C-08 rebuild
 - **Phase 10:** U-01–U-18, NDPA
 - **Phase 11:** AR-1–10, SLOs
 
-**Do not onboard paying users until Phase 6 is complete** (Phase 0 §A.4). We now execute **Phase 6.5** (S-16/S-15/S-13 polish).
+**Phase 6 is complete** — every P0 from the new audit is closed, plus the P1s scheduled for 6.5. Next: **Phase 7** (auth/quota/money correctness: S-07 OAuth nonce+PKCE, S-08 JWT 15 m + hashed refresh, B-05 currency matrix, B-06 usage_counters, B-09 monthly-reset filter, D-05 analytics truncation).
 
 ---
 
@@ -147,6 +147,31 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 - `npm test` (6 suites) + `npm run security:check` (28/28) + `node --check` green — **PASS ✅ (2026-10-01)**
 
 **DONE 6.2:** S-05. **Pending after 6.2:** 6.3 (S-06 tenant routing), 6.4 (B-01 free-grant), 6.5 (S-16/S-15 OTP/XFF polish) → then Phase 7.
+
+
+---
+
+## 5c. Phase 6.5 — Exit criteria & evidence (DONE 2026-10-01)
+
+**Deliverables:** `src/utils/otp.js` (CSPRNG codes, sha256, constant-time compare, `verifyOTPRecord` lockout table), `pickFields()` in `src/utils/validation.js`, `index.js` (7 PATCH allow-lists, OTP flows rewritten, uniform forgot-password, neutral registration message, `req.ip` location + bounded geo cache, login DTO, single-source validators), `tests/unit/otp.test.mjs`, `supabase/migrations/20261006_phase6_05_hardening.sql`, `scripts/security-check.mjs` 71→84, `docs/API.md`.
+
+**Exit criteria (tracker L87, all must pass):**
+- `users` DTO allow-list — **PASS ✅** (login selects explicit columns; profile PATCH already allow-listed in 6.1)
+- `crypto.randomInt` OTP — **PASS ✅** (no `Math.random` generator remains; unit: 3,000-draw entropy check)
+- allow-list PATCH — **PASS ✅** (no `{...req.body}` / `update(req.body)`; all 7 routes use `pickFields` with type/enum/range validation; unit: id/user_id/payment_status/`__proto__` unreachable)
+- `XFF` uses `req.ip` (trust proxy) — **PASS ✅** (header never read; live: spoofed `8.8.8.8` still resolves NG/NGN)
+- real per-code lockout — **PASS ✅** (5 wrong guesses → the code is dead, `429`; used codes never replay; attempt counter caps)
+- `npm test` (9 suites) + `npm run security:check` (84/84) + `node --check` + live E2E green — **PASS ✅ (2026-10-01)**
+
+**Also fixed en route:** the local `isValidEmail` regex rejected every address containing the letter "s"
+(registration blocker) — the file now imports the single source from `src/utils/validation.js`;
+orders now notify customers when only `delivery_status` changes (the old condition required a `status` change too).
+
+**Documented residual (deliberate, Phase 7):** registration still *rejects* a taken email (one neutral message).
+An attacker probing with a guaranteed-unique username can still infer that the email exists; eliminating it
+entirely requires the Phase 7 auth rework (soft-accept + owner notification + CAPTCHA), not a message tweak.
+
+**DONE 6.5:** S-13, S-15, S-16 (+ S-22 login DTO). **Pending after 6.5:** Phase 7 (S-07/S-08/S-09, B-05/B-06/B-09, D-05) → 8 (core loop) → 9 (social) → 10 (UX/NDPA).
 
 ---
 

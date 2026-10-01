@@ -27,3 +27,4 @@ Copy `.env.example` to `.env`. Never commit `.env`.
 Generate secrets: `openssl rand -hex 32` for each `*_SECRET`.
 
 See `SECURITY.md` for rotation.
+| `TRUST_PROXY` | no | `1` | Proxy hops Express should trust for `req.ip` (Render = 1). Set `false` if the app is exposed directly, or the exact hop count behind another proxy. |

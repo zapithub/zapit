@@ -18,7 +18,7 @@ This file is the single source of truth for what is **DONE** vs **PENDING**. Upd
 | **Phase 6.2** | P0 — WhatsApp Webhook Authenticity | S-05,W-07 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
 | **Phase 6.3** | P0 — Tenant Routing & Shared-Mode Safety | S-06, W-14 (new) | ✅ **DONE — 2026-10-01** | 2026-10-01 |
 | **Phase 6.4** | P0 — Billing Free-Grant Kill | B-01,B-02,B-04,B-07 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
-| **Phase 6.5** | P0/P1 — Data Leak & Injection Polish | S-22,S-16,S-15,S-13 | ⏳ **PENDING** | — |
+| **Phase 6.5** | P0/P1 — Data Leak & Injection Polish | S-22,S-16,S-15,S-13 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
 | **Phase 7** | P1 — Auth, Quotas, Money Correctness | S-07,S-08,S-14,B-05… | ⏳ **PENDING** | — |
 | **Phase 8** | P1 — Core Loop: Orders & Payments in Chat | W-01–W-04 | ⏳ **PENDING** | — |
 | **Phase 9** | P1 — Rebuild Social Publishing | C-01–C-08 | ⏳ **PENDING** | — |
@@ -276,6 +276,30 @@ fixed first — the routing queries themselves could never have worked with it i
 - Migration `20261004_phase6_03_shared_routing.sql` — 113 lines ✅
 
 
+
+---
+
+## Phase 6.5 — Data Leak & Injection Hardening (S-13, S-15, S-16) — Detail
+
+| Task | Finding | Description | Status |
+|------|---------|-------------|--------|
+| 6.5.0 | — | **Latent bug found while diffing:** `index.js` carried its own `isValidEmail` with the regex `/^[^s@]+@[^s@]+\.[^s@]+$/` — it rejected **every address containing the letter "s"** (`test@test.com`, `susan@gmail.com`). A registration blocker like that is a data-integrity bug; the file now imports the single source of truth from `src/utils/validation.js` | ✅ Done |
+| 6.5.1 | **S-13** | `detectLocation()` no longer reads `X-Forwarded-For` — it uses Express's proxy-aware `req.ip` (trust proxy=1), strips IPv4-mapped IPv6, detects private/ULA ranges, and caches non-local geo lookups (30 min, bounded) with a 5 s timeout. Spoofed XFF can no longer change a user's billing currency or turn `/pricing/location` into a free geo-lookup proxy | ✅ Done |
+| 6.5.2 | **S-15** | OTPs now come from `crypto.randomInt(100000, 1000000)` (`src/utils/otp.js`), stay sha256-hashed, and the verify flows use the pure `verifyOTPRecord()` decision table: `missing → used → expired → locked → mismatch`. Wrong guesses increment `attempts` on the newest live code and **lock it after 5** (429); a redeemed code can never be replayed; migration `20261006` adds the column (code tolerates a pre-migration DB) | ✅ Done |
+| 6.5.3 | **S-15** | Anti-oracle: registration answers with one neutral message (never says *which* identifier is taken); `/auth/forgot-password` sends mail only to real accounts but answers at a uniform randomised latency with a background send, so response timing no longer reveals existence | ✅ Done |
+| 6.5.4 | **S-16** | All seven PATCH routes (products, orders, contacts, knowledge-base, content automations, brand-voice, admin global-kb) now build payloads through `pickFields()` allow-lists with type/enum/range/array validation — `user_id`, `id`, `payment_status`, `total`, `order_number`, counters and unknown columns can never be written. Orders additionally notify on delivery-status changes (the old condition only fired on `status`) | ✅ Done |
+| 6.5.5 | **S-22 follow-up** | Login selects an explicit column list (`SAFE_USER_SELECT + password_hash`) instead of `select('*')` | ✅ Done |
+| 6.5.6 | — | Tests `tests/unit/otp.test.mjs` (7 groups: CSPRNG codes, hash/constant-time compare, full lockout decision table, allow-list/prototype-pollution, field rules, the email-validator regression, source wiring); `security-check` 71 → **84 checks**; `npm test` **9 suites** | ✅ Done |
+
+**Phase 6.5 Exit Criteria:** `crypto.randomInt` OTP with a real per-code lockout; allow-listed PATCH routes (no `{...req.body}`, no `update(req.body)`); `XFF` resolved via `req.ip`; `users` DTO allow-list; tests + security checks green. — **PASSED** ✅
+
+**Verification (2026-10-01, live E2E + unit):**
+- `susan@gmail.com` now passes validation (previously 400 "Valid email is required."); malformed email still 400 ✅
+- Spoofed `X-Forwarded-For: 8.8.8.8` no longer influences pricing: `/pricing/location` resolves through `req.ip` (1 trusted hop) and falls back to **NG/NGN** when the geo service is unreachable; direct deployments can set `TRUST_PROXY=false` so the header is ignored entirely ✅
+- verify-email answers uniformly `400 Invalid or expired code`; OTP limiter returns 429 as designed ✅
+- `npm test` **9 suites ✅**; `npm run security:check` **84/84 ✅**; `node --check` ✅
+- grep invariants: no `...req.body`, no `update(req.body)`, no `x-forwarded-for`, no `Math.random` OTP generator ✅
+
 ---
 
 ## Phase 6.4 — P0 Billing Free-Grant Kill (B-01, B-02, B-04, B-07) — Detail
@@ -342,6 +366,14 @@ fixed first — the routing queries themselves could never have worked with it i
   - **Verification:** `node --check` ✅, `npm test` ✅, `security:check` 55/55 ✅, live E2E ✅, `.catch` count 0 ✅
 
 
+### 2026-10-01 — Phase 6.5 Completed ✅ — Data Leak & Injection Hardening (S-13/S-15/S-16)
+- **Phase 6.5 — DONE**
+  - Created `src/utils/otp.js` (crypto OTP, hashing, constant-time compare, `verifyOTPRecord` lockout table) + `pickFields()` allow-list engine in `src/utils/validation.js`
+  - 7 PATCH routes converted to validated allow-lists; login DTO narrowed; OTP flows rewritten with real per-code lockout; forgot-password timing-uniform; registration no longer discloses which identifier exists
+  - XFF spoofing closed (`req.ip` + private-range handling + bounded geo cache); fixed the local `isValidEmail` regex that rejected addresses containing "s"
+  - Migration `20261006_phase6_05_hardening.sql` (otp `attempts` + indexes + `prune_otp_verifications(7)`); `tests/unit/otp.test.mjs`; `npm test` **9 suites**; `security-check` **84 checks**
+  - **Verification:** `node --check` ✅, `npm test` ✅, `security:check` 84/84 ✅, live E2E ✅
+
 ### 2026-10-01 — 6.3 follow-up hotfix ✅ — route-code await + guarded number connect
 - Fixed `/onboarding/whatsapp` storing a **Promise** as `wa_route_code` for first-time shared users (missing `await pickFreeRouteCode()`)
 - `PATCH /whatsapp/settings` now accepts `wa_phone_number_id` through a **guarded transition**: rejects ZAPIT's shared number, requires a token, 409 on numbers already linked to another business, disconnect returns to shared mode (nulls tenant creds, allocates a code)
@@ -367,14 +399,14 @@ fixed first — the routing queries themselves could never have worked with it i
 |--------|--------|-------|
 | Critical findings | 11 | 0 |
 | High findings | 14 | 0 |
-| Security check | — | 71/71 ✅ (Phase 6.4 + 6.3 follow-up) |
-| Tests | 0 | 8 suites ✅ (incl. admin, webhook, tenantRouting, billing) |
+| Security check | — | 84/84 ✅ (Phase 6.5) |
+| Tests | 0 | 9 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp) |
 | Docs | 2 lines | 150+ lines + 5 docs |
-| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 3,734 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails), modular imports, allowlist, spawn, cache, locks |
+| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 3,878 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF), modular imports, allowlist, spawn, cache, locks |
 | Frontend | 4× duplicated tokens, hardcode, 45 raw innerHTML | shared.css, pricing.json, DOMPurify+CSP, PWA, a11y focus trap |
-| DB | no migrations | 5 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails) + advisory locks |
+| DB | no migrations | 6 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout) + advisory locks |
 
-**Next steps for the team:** Run `supabase db push` (apply `20261002`…`20261005`, then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`), set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN`, share `GET /whatsapp/qr-code` route codes with free-plan users, then continue **Phase 6.5 (S-16/S-15/S-13 polish)**, before paid traffic per Phase 0 §A.4. Phase 6.1–6.4 P0s closed — **all P0 audit findings resolved**. 🎉
+**Next steps for the team:** Run `supabase db push` (apply `20261002`…`20261005`, then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`), set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN`, share `GET /whatsapp/qr-code` route codes with free-plan users, then continue **Phase 7 (auth, quotas, money correctness)**, before paid traffic per Phase 0 §A.4. Phases 6.1–6.5 closed — **all P0 audit findings + the 6.5 P1s resolved**. 🎉
 
 ---
 
