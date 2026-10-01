@@ -262,6 +262,7 @@ fixed first — the routing queries themselves could never have worked with it i
 | 6.3.4 | **S-06/W-07** | `resolveSendCreds()` — outbound sends use an **explicit channel**: tenant credentials (individual, strict — throws when missing) or the platform shared number (shared tenants only). Applied to webhook welcome/AI reply, broadcast, conversation reply, onboarding notify, order/payment/cancel notifications | ✅ Done |
 | 6.3.5 | **S-06** | Migration `20261004_phase6_03_shared_routing.sql`: `business_settings.wa_route_code` (backfilled, uppercase CHECK, **unique index**), platform creds purged from shared rows, **UNIQUE partial index** `(wa_phone_number_id) WHERE connection_method='individual'`, `wa_customer_tenant`, `shared_guidance`, `prune_wa_routing(180)` | ✅ Done |
 | 6.3.6 | — | Tests `tests/unit/tenantRouting.test.mjs` — 16 groups incl. the notebook test **“two shared tenants: no code → no tenant; `#CODE` → the right tenant of two”**, sticky/stale mapping, ambiguity refusal, cooldown throttle, credentials matrix, source wiring. `security-check` 44 → **55 checks** (adds W-14 zero-`.catch`, S-06 resolver/no-arbitrary-tenant/no-platform-creds, routing util, migration indexes) | ✅ Done |
+| 6.3.7-fu | — | **Follow-up (2026-10-01):** fixed a missing `await` on `pickFreeRouteCode()` in `/onboarding/whatsapp` (a Promise could reach `wa_route_code`), and made `PATCH /whatsapp/settings` support dedicated-number connect/disconnect with guards: refuses ZAPIT's shared number (no hijack), requires an access token, maps duplicate numbers to **409**, clears tenant creds on disconnect, allocates a routing code race-safely | ✅ Done |
 | 6.3.7 | — | Docs: `docs/API.md` (webhook contract + shared-number routing rules), `docs/ENV.md` (`SHARED_WA_NUMBER`) | ✅ Done |
 
 **Phase 6.3 Exit Criteria:** two shared tenants + stranger message on the shared number → **no tenant chosen** (old code answered as the first row); `#CODE` → the correct tenant only; sticky mapping → same tenant without the code; duplicate dedicated numbers → refused; unmatched → throttled guidance; zero `.catch(…)` on Supabase builders; `npm test` + `security:check` green. — **PASSED** ✅
@@ -286,7 +287,7 @@ fixed first — the routing queries themselves could never have worked with it i
 | 6.4.2 | **B-02** | `POST /subscription/cancel` keeps `status='active'` with `cancel_at = expires_at` (access until period end, matching the promise); immediately cancelled only when no paid time remains; cron downgrades at expiry | ✅ Done |
 | 6.4.3 | **B-04 + S-14** | Paystack `charge.success` is authorised by the pure `evaluateCharge()`: explicit success status, plan ≠ free, metadata agreement between signed event and `/transaction/verify`, currency match, and **amount == plan price in minor units** (annual = 12×0.8, unknown cycle → monthly, ±1 rounding unit) — any mismatch refuses the grant. Every verified charge is appended to the immutable `transactions` ledger (UNIQUE reference, UPDATE blocked by trigger); `/subscription/invoices` and `/admin/revenue` read the ledger | ✅ Done |
 | 6.4.4 | **B-07** | `POST /admin/users/:id/set-plan` — privileged grants are **bounded (1–365 days, integer)**, audited in `admin_audit_log` with actor/action/`details`/IP (new `details jsonb` column), and `req.adminVia` records secret-vs-role | ✅ Done |
-| 6.4.5 | — | Tests `tests/unit/billing.test.mjs` (7 groups incl. the full `evaluateCharge` decision table: underpay, currency switch, metadata tamper, annual-vs-monthly); `security-check` 55 → **67 checks**; `npm test` **8 suites** | ✅ Done |
+| 6.4.5 | — | Tests `tests/unit/billing.test.mjs` (7 groups incl. the full `evaluateCharge` decision table: underpay, currency switch, metadata tamper, annual-vs-monthly); `security-check` 55 → **71 checks**; `npm test` **8 suites** | ✅ Done |
 | 6.4.6 | — | Docs: `docs/API.md` billing contract (cancel/reactivate/webhook rules) | ✅ Done |
 
 **Phase 6.4 Exit Criteria:** `reactivate` requires payment or resumes with the **same** expiry (no free 30-day grant); `cancel` sets `cancel_at` period-end (access retained); webhook checks amount **and** currency before granting; `transactions` unique + append-only; no free Agency via API (admin grants bounded + audited); `npm test` + `security:check` green. — **PASSED** ✅
@@ -294,7 +295,7 @@ fixed first — the routing queries themselves could never have worked with it i
 **Verification (2026-10-01, live E2E + unit):**
 - `node --check < index.js` — ✅ (3,734 lines)
 - `npm test` — **8 suites ✅** (validation, plans, cache, crypto, admin, webhook, tenantRouting, **billing**)
-- `npm run security:check` — **67/67 ✅** (was 55; +B-01/B-02/B-04/B-07/S-14/migration groups)
+- `npm run security:check` — **71/71 ✅** (was 55; +B-01/B-02/B-04/B-07/S-14/migration groups)
 - Live (PORT=3096, `PAYSTACK_SECRET_KEY` set): unauth `cancel`/`reactivate`/`invoices`/`current` → **401** ✅; paystack webhook unsigned/tampered → **400** ✅; **signed bogus ₦1 “agency” charge → acked 200 but refused** (`[PAYSTACK WEBHOOK] fetch failed` → verify unavailable ⇒ no grant) ✅; WhatsApp matrix regression ✅; gateway calls bounded by 10s timeout ✅
 - `grep` invariants: no free-grant in reactivate ✅, `evaluateCharge` + plan-price check present ✅, `transactions` ledger write present ✅
 
@@ -341,6 +342,12 @@ fixed first — the routing queries themselves could never have worked with it i
   - **Verification:** `node --check` ✅, `npm test` ✅, `security:check` 55/55 ✅, live E2E ✅, `.catch` count 0 ✅
 
 
+### 2026-10-01 — 6.3 follow-up hotfix ✅ — route-code await + guarded number connect
+- Fixed `/onboarding/whatsapp` storing a **Promise** as `wa_route_code` for first-time shared users (missing `await pickFreeRouteCode()`)
+- `PATCH /whatsapp/settings` now accepts `wa_phone_number_id` through a **guarded transition**: rejects ZAPIT's shared number, requires a token, 409 on numbers already linked to another business, disconnect returns to shared mode (nulls tenant creds, allocates a code)
+- Regression + wiring tests added; `security:check` 67 → **71 checks**
+- `/whatsapp/test-connection` now short-circuits shared-mode users with a clear "no credentials needed" response instead of a misleading error
+
 ### 2026-10-01 — Phase 6.4 Completed ✅ — P0 Billing Free-Grant Kill (B-01/B-02/B-04/B-07)
 - **Phase 6.4 — P0 Billing Free-Grant Kill — DONE**
   - Created `src/utils/billing.js` (cycles/pricing, `expectedAmountMinor`, `verifyPaymentAmount`, `cancelSubscriptionPlan`, `reactivateDecision`, `activationFields`, pure `evaluateCharge`)
@@ -348,8 +355,8 @@ fixed first — the routing queries themselves could never have worked with it i
   - Paystack webhook: amount/currency/metadata verification before any grant; immutable `transactions` ledger (unique + append-only trigger); invoices/revenue read the ledger
   - Admin set-plan grants bounded 1–365 days + audited; Paystack gateway calls time-bounded (10s)
   - Created `supabase/migrations/20261005_phase6_04_billing_guardrails.sql` (cancel_at/cancelled_at + index, ledger uniqueness + immutability trigger, `admin_audit_log.details`)
-  - Tests `tests/unit/billing.test.mjs`; `npm test` **8 suites**; `security-check` **67 checks**; docs/API.md updated
-  - **Verification:** `node --check` ✅, `npm test` ✅, `security:check` 67/67 ✅, live E2E (401/400/200-refused) ✅
+  - Tests `tests/unit/billing.test.mjs`; `npm test` **8 suites**; `security-check` **71 checks**; docs/API.md updated
+  - **Verification:** `node --check` ✅, `npm test` ✅, `security:check` 71/71 ✅, live E2E (401/400/200-refused) ✅
 
 
 ---
@@ -360,7 +367,7 @@ fixed first — the routing queries themselves could never have worked with it i
 |--------|--------|-------|
 | Critical findings | 11 | 0 |
 | High findings | 14 | 0 |
-| Security check | — | 67/67 ✅ (Phase 6.4) |
+| Security check | — | 71/71 ✅ (Phase 6.4 + 6.3 follow-up) |
 | Tests | 0 | 8 suites ✅ (incl. admin, webhook, tenantRouting, billing) |
 | Docs | 2 lines | 150+ lines + 5 docs |
 | `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 3,734 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails), modular imports, allowlist, spawn, cache, locks |

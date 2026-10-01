@@ -214,6 +214,18 @@ const individual = { id: 'bs-i', user_id: 'user-i', business_name: 'Dedicated Lt
   assert.ok(index.includes('maybeSendRoutingGuidance('), 'unmatched messages get throttled guidance');
   assert.ok(index.includes('resolveSendCreds('), 'outbound sends use explicit channels');
   assert.ok(index.includes('assignRouteCode(') && index.includes('pickFreeRouteCode('), 'route code allocation wired');
+  // Regression: allocation must be awaited (a Promise must never reach the DB)
+  assert.ok(!/: pickFreeRouteCode\(/.test(index), 'pickFreeRouteCode is always awaited');
+  assert.ok(index.includes('await pickFreeRouteCode('), 'route-code allocation awaits the allocator');
+  // Guarded dedicated-number connect on PATCH /whatsapp/settings
+  const patchStart = index.indexOf("app.patch('/whatsapp/settings'");
+const patchBlock = index.slice(patchStart, index.indexOf('\n// ', patchStart + 10));
+  assert.ok(patchBlock.includes("belongs to ZAPIT's shared service"), 'settings refuses the platform shared number');
+  assert.ok(patchBlock.includes('is required to connect a dedicated number'), 'settings requires a token for dedicated numbers');
+  assert.ok(patchBlock.includes("code === '23505'") && patchBlock.includes('409'), 'settings maps number conflicts to 409');
+  assert.ok(patchBlock.includes("connection_method      = 'shared'"), 'disconnect returns the tenant to shared mode');
+  assert.ok(patchBlock.includes('current?.wa_access_token'), 'existing token may be reused without re-sending it');
+  assert.ok(index.includes("channel:'platform-shared'"), 'shared-mode connection test needs no credentials');
   console.log('  ✅ index.js wiring checks (S-06)');
 }
 

@@ -1569,7 +1569,7 @@ app.post('/onboarding/whatsapp', authenticate, async (req, res) => {
     if (connection_method === 'shared' && !routeCode) {
       routeCode = existing
         ? await assignRouteCode(supabase, req.user.id)   // race-safe: unique index + retry
-        : pickFreeRouteCode(supabase);                   // new row: insert carries the code
+        : await pickFreeRouteCode(supabase);             // new row: insert carries the code
       if (!routeCode) return res.status(500).json({ success:false, error:'Could not allocate a routing code. Please retry.' });
       updates.wa_route_code = routeCode;
     }
@@ -1693,10 +1693,65 @@ app.patch('/whatsapp/settings', authenticate, async (req, res) => {
     if (req.body.paystack_secret_key && req.body.paystack_secret_key !== '[ENCRYPTED]') updates.paystack_secret_key = encrypt(req.body.paystack_secret_key);
     if (req.body.paystack_public_key)  updates.paystack_public_key = req.body.paystack_public_key;
     if (req.body.wa_access_token && req.body.wa_access_token !== '[ENCRYPTED]') updates.wa_access_token = encrypt(req.body.wa_access_token);
-    const { data:existing } = await supabase.from('business_settings').select('id').eq('user_id', req.user.id).single();
-    if (existing) await supabase.from('business_settings').update(updates).eq('user_id', req.user.id);
-    else await supabase.from('business_settings').insert({ ...updates, user_id:req.user.id });
-    return res.json({ success:true, message:'Settings updated!' });
+
+    const { data:current } = await supabase.from('business_settings')
+      .select('id,wa_phone_number_id,connection_method,wa_access_token,wa_route_code').eq('user_id', req.user.id).single();
+
+    // S-06/W-07: switching between the shared platform number and a dedicated number is an
+    // explicit, guarded transition — the raw column is never mass-assignable.
+    if (req.body.wa_phone_number_id !== undefined) {
+      const numId = String(req.body.wa_phone_number_id || '').trim();
+      if (!numId) {
+        // Disconnect → back to the shared number. Tenant rows NEVER keep platform creds.
+        updates.wa_phone_number_id     = null;
+        updates.connection_method      = 'shared';
+        updates.wa_access_token        = null;
+        updates.wa_business_account_id = null;
+        if (!current?.wa_route_code) {
+          const rc = current ? await assignRouteCode(supabase, req.user.id) : await pickFreeRouteCode(supabase);
+          if (!rc) return res.status(500).json({ success:false, error:'Could not allocate a routing code. Please retry.' });
+          updates.wa_route_code = rc;
+        }
+      } else {
+        if (!/^\d{5,30}$/.test(numId)) return res.status(400).json({ success:false, error:'Invalid WhatsApp Phone Number ID.' });
+        if (WA_PHONE_NUMBER_ID && numId === String(WA_PHONE_NUMBER_ID))
+          return res.status(400).json({ success:false, error:"That number belongs to ZAPIT's shared service — use the shared connection instead." });
+        const hasToken = (req.body.wa_access_token && req.body.wa_access_token !== '[ENCRYPTED]') || current?.wa_access_token;
+        if (!hasToken) return res.status(400).json({ success:false, error:'An Access Token is required to connect a dedicated number.' });
+        updates.wa_phone_number_id = numId;
+        updates.connection_method  = 'individual';
+        if (req.body.wa_business_account_id !== undefined) updates.wa_business_account_id = String(req.body.wa_business_account_id||'').trim() || null;
+      }
+    }
+
+    let write;
+    if (current) {
+      write = await supabase.from('business_settings').update(updates).eq('user_id', req.user.id);
+      if (write.error?.code === '23505' && /wa_route_code/.test(write.error.message || '')) {
+        const rc = await assignRouteCode(supabase, req.user.id);
+        if (rc) { updates.wa_route_code = rc; write = await supabase.from('business_settings').update(updates).eq('user_id', req.user.id); }
+      }
+    } else {
+      write = await supabase.from('business_settings').insert({ ...updates, user_id:req.user.id });
+      for (let i = 0; i < 3 && write.error?.code === '23505' && /wa_route_code/.test(write.error.message || ''); i++) {
+        const rc = await pickFreeRouteCode(supabase);
+        if (!rc) break;
+        updates.wa_route_code = rc;
+        write = await supabase.from('business_settings').insert({ ...updates, user_id:req.user.id });
+      }
+    }
+    if (write.error) {
+      if (write.error.code === '23505') return res.status(409).json({ success:false, error:'That WhatsApp number is already linked to another ZAPIT business.' });
+      return res.status(500).json({ success:false, error:'Failed to update settings.' });
+    }
+    return res.json({
+      success:true, message:'Settings updated!',
+      data:{
+        connection_method:  updates.connection_method  ?? current?.connection_method  ?? 'shared',
+        wa_phone_number_id: updates.wa_phone_number_id !== undefined ? updates.wa_phone_number_id : (current?.wa_phone_number_id ?? null),
+        route_code:         updates.wa_route_code      ?? current?.wa_route_code      ?? null,
+      },
+    });
   } catch { return res.status(500).json({ success:false, error:'Failed to update settings.' }); }
 });
 
@@ -1707,6 +1762,15 @@ app.post('/whatsapp/test-connection', authenticate, async (req, res) => {
     const { data:user }     = await supabase.from('users').select('whatsapp_number,phone').eq('id', req.user.id).single();
     const to = req.body.phone || user?.whatsapp_number || user?.phone;
     if (!to) return res.status(400).json({ success:false, error:'Please provide a phone number to test.' });
+    // S-06: shared-mode tenants use ZAPIT's platform number — there is nothing for them to test,
+    // and we must never imply they need (or may paste) platform credentials.
+    if ((settings?.connection_method || 'shared') === 'shared') {
+      return res.json({
+        success:true,
+        data:{ channel:'platform-shared', shared_number:SHARED_WA_NUMBER, route_code:settings?.wa_route_code||null },
+        message:`You are connected to ZAPIT's shared WhatsApp number${SHARED_WA_NUMBER?` (${SHARED_WA_NUMBER})`:''} — no credentials needed. Ask new customers to start with #${settings?.wa_route_code||'YOURCODE'}.`,
+      });
+    }
     if (!settings?.wa_phone_number_id || !settings?.wa_access_token) {
       return res.status(400).json({ success:false, error:'Missing tenant WhatsApp credentials — configure your dedicated number in Settings → WhatsApp (individual mode).' });
     }

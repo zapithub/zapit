@@ -229,6 +229,18 @@ else pass('Admin set-plan days are bounded 1–365 (B-07)');
 if (!setPlanBlock.includes('admin_audit_log')) fail('admin set-plan is not audited (B-07)');
 else pass('Admin set-plan writes an audit row (B-07)');
 
+// S-06 follow-up: guarded dedicated-number connect + awaited allocation
+const patchStart = indexJs.indexOf("app.patch('/whatsapp/settings'");
+const patchSettings = indexJs.slice(patchStart, indexJs.indexOf('\n// ', patchStart + 10));
+if (!patchSettings.includes("belongs to ZAPIT's shared service")) fail('settings accepts the platform shared number (S-06)');
+else pass('Settings refuses the platform shared number (S-06)');
+if (!patchSettings.includes('is required to connect a dedicated number')) fail('settings connects a dedicated number without a token (W-07)');
+else pass('Settings requires a token for dedicated numbers (W-07)');
+if (!patchSettings.includes('409')) fail('settings does not map duplicate numbers to 409 (S-06)');
+else pass('Settings maps duplicate numbers to 409 (S-06)');
+if (/: pickFreeRouteCode\(/.test(indexJs)) fail('route-code allocation is not awaited (S-06 regression)');
+else pass('Route-code allocation is always awaited (S-06)');
+
 // billing util + migration
 try {
   const bl = fs.readFileSync('src/utils/billing.js','utf8');

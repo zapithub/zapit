@@ -83,7 +83,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 | **6.1** | **P0 — Admin & Secrets Closure** | S-01 (admin by name), S-22 (hash leak), W-07 fallback, S-02 follow-up hardening | P0 | S | ✅ **DONE 2026-10-01** — Register `admin` blocked (400); `/admin/*` requires DB `role='admin'`; `select('*')` gone; `sendWAMessage` never falls back; `security:check` 23/23 + 5 suites |
 | **6.2** | **P0 — WhatsApp Webhook Authenticity** | S-05 (HMAC), S-25/S-06 related | P0 | S | ✅ **DONE 2026-10-01** — raw body captured, `X-Hub-Signature-256` HMAC `timingSafeEqual`, 401 invalid / 503 prod-missing-secret, wamid replay dedup, constant-time handshake; 6 suites + 28/28 + live E2E (401/403/200/503) |
 | **6.3** | **P0 — Tenant Routing & Shared-Mode Safety** | S-06, partial W-04, **W-14 (new)** | P0 | M | ✅ **DONE 2026-10-01** — discriminator `#CODE` + sticky `wa_customer_tenant`; UNIQUE(wa_phone_number_id) for individual + UNIQUE route codes; notebook test: 2 shared tenants, no code → **no tenant**, `#CODE` → correct one; **plus W-14**: 43 broken `.catch` on Supabase builders fixed (0 remain) |
-| **6.4** | **P0 — Billing Free-Grant Kill** | B-01, B-02, B-04, B-07 | P0 | S–M | ✅ **DONE 2026-10-01** — 67 security checks, 8 test suites, live E2E (401 / 400 / acked-but-refused bogus charge); migration `20261005` |
+| **6.4** | **P0 — Billing Free-Grant Kill** | B-01, B-02, B-04, B-07 | P0 | S–M | ✅ **DONE 2026-10-01** — 71 security checks, 8 test suites, live E2E (401 / 400 / acked-but-refused bogus charge); migration `20261005` |
 | **6.5** | **P0/P1 — Data Leak & Injection Hardening** | S-22, S-16, S-03 follow-up, S-15 OTP, S-13 XFF | P0/P1 | M | `users` DTO allow-list; `crypto.randomInt` OTP; allow-list PATCH; `XFF` uses `req.ip` (trust proxy) |
 | **7** | **P1 — Auth, Quotas, Money Correctness** | S-07, S-08, S-09, S-14, B-05, B-06, B-09, D-05, S-15/16/17, S-12 follow-up | P1 | L | OAuth nonce+PKCE, JWT 15m + hashed refresh, httpOnly cookie path documented, Paystack amount matrix, usage_counters + middleware, reset cron filtered, analytics `count` not truncated |
 | **8** | **P1 — Core Loop: Orders & Payments in Chat** | W-01, W-02, W-03 (templates), W-04 (dedup), W-07 done, N-1/N-2 | P1 | XL | Customer can type quantity/address → order row + `generateOrderNumber` + Paystack link/bank ref → webhook marks `paid` → confirmation; welcome bug fixed; STOP handled; human takeover flag |
@@ -160,9 +160,9 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 - webhook checks amount **and** currency — **PASS ✅** (`evaluateCharge`: metadata agreement, currency, minor-unit price ±1; `charge.success` refused on any mismatch)
 - `transactions` unique — **PASS ✅** (unique `paystack_reference` re-asserted + append-only trigger; duplicate insert never returns early before activation)
 - no free Agency via API — **PASS ✅** (`set-plan` 1–365 integer days + `admin_audit_log`; webhook refuses `free`)
-- `npm test` (8 suites) + `npm run security:check` (67/67) + `node --check` + live E2E green — **PASS ✅ (2026-10-01)**
+- `npm test` (8 suites) + `npm run security:check` (71/71) + `node --check` + live E2E green — **PASS ✅ (2026-10-01)**
 
-**DONE 6.4:** B-01, B-02, B-04, B-07, S-14. **Pending after 6.4:** 6.5 (S-16 mass-assignment, S-15 Math.random OTP, S-13 XFF) → then Phase 7.
+**DONE 6.4 + 6.3 follow-up:** B-01, B-02, B-04, B-07, S-14; route-code `await` regression fixed; `PATCH /whatsapp/settings` dedicated-number connect is now guarded (no shared-number hijack, token required, 409 duplicates). **Pending after 6.4:** 6.5 (S-16 mass-assignment, S-15 Math.random OTP, S-13 XFF) → then Phase 7.
 
 ---
 

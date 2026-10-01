@@ -48,6 +48,18 @@ Plans: `free`, `creator`, `growth`, `agency` (`src/config/plans.js`). Prices are
   - **`402 {success:false, payment_required:true, payment_url, reference, amount, currency, plan, billing_cycle}`**
     when the paid period has ended — a *new* Paystack payment is required before access returns;
   - `404` — no subscription on record.
+### WhatsApp connection settings (S-06 follow-up)
+
+`PATCH /whatsapp/settings` accepts business fields plus a **guarded** `wa_phone_number_id`:
+
+- non-empty → dedicated (individual) mode: must be digits (5–30), must **not** be ZAPIT's shared
+  number, and an access token must exist (new or already stored) → else `400`; a number already
+  linked to another business → **`409`**.
+- `""` (empty) → disconnect: returns the tenant to the shared number, clears stored tenant
+  credentials and allocates a routing code if none exists.
+- The raw column is never mass-assignable; the response returns
+  `data:{connection_method, wa_phone_number_id, route_code}`.
+
 - `GET /subscription/invoices` — reads the immutable `transactions` ledger first (legacy
   `subscriptions` rows as fallback).
 - `POST /admin/users/:id/set-plan` `{plan, expires_in_days}` — `expires_in_days` must be an
