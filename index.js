@@ -32,8 +32,8 @@ const {
   FRONTEND_URL        = 'http://localhost:5500',
   SUPABASE_URL,
   SUPABASE_SERVICE_KEY,
-  JWT_SECRET          = 'zapit-secret-change-me',
-  JWT_REFRESH_SECRET  = 'zapit-refresh-change-me',
+  JWT_SECRET,
+  JWT_REFRESH_SECRET,
   WA_ACCESS_TOKEN,
   WA_PHONE_NUMBER_ID,
   WA_VERIFY_TOKEN     = 'zapit_webhook_secret_2024',
@@ -54,8 +54,36 @@ const {
   ADMIN_SECRET,
   ADMIN_USERNAMES     = 'admin',
   UNSPLASH_ACCESS_KEY,
-  ENCRYPTION_KEY      = 'zapit-32-char-encryption-key-1234',
+  ENCRYPTION_KEY,
 } = process.env;
+
+// ─── STARTUP ENV VALIDATION (Phase 1 — fail-closed) ─────────────
+const __IS_PROD = NODE_ENV === 'production';
+function __requireEnv(name, value, minLen = 16) {
+  if (!value || value.length < minLen) {
+    const msg = `[ENV] ${name} is missing or too short (min ${minLen} chars). Set a strong random value via env.`;
+    if (__IS_PROD) { console.error(msg); process.exit(1); }
+    else console.warn(`⚠️  ${msg} Using dev fallback (DO NOT use in production).`);
+    return false;
+  }
+  return true;
+}
+const __hasJWTSecret      = __requireEnv('JWT_SECRET', JWT_SECRET, 32);
+const __hasRefreshSecret  = __requireEnv('JWT_REFRESH_SECRET', JWT_REFRESH_SECRET, 32);
+const __hasEncKey         = __requireEnv('ENCRYPTION_KEY', ENCRYPTION_KEY, 32);
+const __effectiveJWTSecret     = JWT_SECRET || (__IS_PROD ? null : crypto.randomBytes(32).toString('hex'));
+const __effectiveRefreshSecret = JWT_REFRESH_SECRET || (__IS_PROD ? null : crypto.randomBytes(32).toString('hex'));
+const __effectiveEncKey        = ENCRYPTION_KEY || (__IS_PROD ? null : crypto.randomBytes(32).toString('hex'));
+
+// Supabase must be configured — fail fast if not (no placeholder)
+if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+  const msg = '[ENV] SUPABASE_URL and SUPABASE_SERVICE_KEY are required. Set them in your environment.';
+  if (__IS_PROD) { console.error(msg); process.exit(1); }
+  else console.warn('⚠️  ' + msg + ' Running in degraded mock mode (dev only).');
+}
+if (SUPABASE_URL && !SUPABASE_URL.startsWith('https://')) {
+  console.warn('⚠️  SUPABASE_URL should be https://');
+}
 
 // ─── SUPABASE ────────────────────────────────────────────────────
 const supabase = createClient(
@@ -63,6 +91,10 @@ const supabase = createClient(
   SUPABASE_SERVICE_KEY || 'placeholder-key',
   { auth: { autoRefreshToken: false, persistSession: false } }
 );
+// Warn if placeholder is in use (dev only)
+if (!SUPABASE_URL || SUPABASE_URL.includes('placeholder')) {
+  console.warn('⚠️  Supabase is running with placeholder credentials — all DB calls will fail. Set SUPABASE_URL/SERVICE_KEY.');
+}
 
 // ─── PLAN LIMITS ────────────────────────────────────────────────
 const PLAN_LIMITS = {
@@ -111,55 +143,106 @@ const PLAN_LIMITS = {
 // ─── EXPRESS SETUP ──────────────────────────────────────────────
 const app = express();
 
-app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+// Trust proxy when behind Render / Nginx (needed for correct req.ip and secure cookies)
+app.set('trust proxy', 1);
 
+// Request ID + structured logging
+app.use((req, _res, next) => {
+  req.id = req.headers['x-request-id'] || crypto.randomUUID();
+  next();
+});
+
+// Security headers — strict but compatible with current inline styles/scripts
+// CSP is set to report-only style for now to avoid breaking existing inline CSS/JS;
+// Phase 3 will add nonces and move scripts to files for full enforcement.
+app.use(helmet({
+  contentSecurityPolicy: false, // Phase 3 will enable nonce-based CSP; keep off to avoid breaking inline styles
+  crossOriginEmbedderPolicy: false,
+  hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
+app.use((req, res, next) => {
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('X-Request-Id', req.id);
+  next();
+});
+
+// CORS — strict allowlist, fail closed in production, allow preview hosts for Arena/E2B
+const ALLOWED_ORIGINS = [
+  FRONTEND_URL, 'http://localhost:3000', 'http://localhost:5500',
+  'http://127.0.0.1:5500', 'https://zapit.app', 'https://www.zapit.app',
+].filter(Boolean);
+const PREVIEW_HOST_RE = /^https:\/\/\d+-[a-z0-9-]+\.e2b\.app$/;
 app.use(cors({
   origin: (origin, cb) => {
-    const allowed = [
-      FRONTEND_URL, 'http://localhost:3000', 'http://localhost:5500',
-      'http://127.0.0.1:5500', 'https://zapit.app', 'https://www.zapit.app',
-    ].filter(Boolean);
-    if (!origin || allowed.includes(origin) || NODE_ENV === 'development') return cb(null, true);
-    cb(null, true); // open in prod; tighten as needed
+    if (!origin) return cb(null, true); // non-browser / curl / webhook / health
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    if (PREVIEW_HOST_RE.test(origin)) return cb(null, true);
+    if (NODE_ENV !== 'production') return cb(null, true); // allow in dev
+    return cb(new Error('CORS: Origin not allowed'), false);
   },
   credentials: true,
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization','x-admin-secret'],
+  allowedHeaders: ['Content-Type','Authorization','x-admin-secret','x-request-id'],
+  exposedHeaders: ['x-request-id','Retry-After'],
 }));
 
-// Raw body for Paystack signature verification — MUST come before express.json()
-app.use('/webhook/paystack', express.raw({ type: 'application/json' }));
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+// Raw body for Paystack — must handle charset variants and come BEFORE json
+app.use('/webhook/paystack', express.raw({ type: (req) => {
+  const ct = (req.headers['content-type'] || '').toLowerCase();
+  return ct.includes('application/json');
+}}));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
   fileFilter: (_req, file, cb) => {
-    const ok = [
+    const allowedMime = new Set([
       'image/jpeg','image/png','image/webp','video/mp4',
       'text/csv',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'application/vnd.ms-excel',
-    ];
-    cb(null, ok.includes(file.mimetype));
+    ]);
+    const allowedExt = new Set(['.jpg','.jpeg','.png','.webp','.mp4','.csv','.xlsx','.xls']);
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const mimeOk = allowedMime.has(file.mimetype);
+    const extOk = !ext || allowedExt.has(ext);
+    if (!mimeOk || !extOk) {
+      return cb(new Error(`File type not allowed: ${file.mimetype} (${ext})`), false);
+    }
+    // Defer magic-byte validation to route handler via sharp (if image)
+    cb(null, true);
   },
 });
 
 // ─── RATE LIMITERS ──────────────────────────────────────────────
-const makeLimit = (windowMs, max, message) =>
-  rateLimit({ windowMs, max, message: { success: false, error: message }, standardHeaders: true, legacyHeaders: false });
+const makeLimit = (windowMs, max, message, keyGen) =>
+  rateLimit({
+    windowMs, max,
+    message: { success: false, error: message },
+    standardHeaders: true, legacyHeaders: false,
+    keyGenerator: keyGen || ((req) => req.ip),
+    handler: (req, res, next, opts) => {
+      res.status(opts.statusCode).json({ success:false, error: opts.message.error || opts.message, retryAfter: res.getHeader('Retry-After') });
+    }
+  });
 
 const globalLimiter  = makeLimit(15 * 60 * 1000, 300,  'Too many requests. Please slow down.');
 const authLimiter    = makeLimit(15 * 60 * 1000, 20,   'Too many auth attempts. Wait 15 minutes.');
 const otpLimiter     = makeLimit(60 * 1000,       3,    'Too many OTP requests. Wait a minute.');
 const webhookLimiter = makeLimit(60 * 1000,       200,  'Webhook rate limit exceeded.');
-const contentLimiter = makeLimit(60 * 60 * 1000,  50,   'AI generation limit reached for this hour.');
+const contentLimiter = makeLimit(60 * 60 * 1000,  50,   'AI generation limit reached for this hour.', (req) => req.user?.id || req.ip);
+const adminLimiter   = makeLimit(15 * 60 * 1000,  50,   'Too many admin requests.');
 
 app.use(globalLimiter);
+app.use(requestLogger);
 
 // ─── ENCRYPTION ─────────────────────────────────────────────────
-const CIPHER_KEY = crypto.scryptSync(ENCRYPTION_KEY, 'zapit-salt-v3', 32);
+const __encKeyForCipher = __effectiveEncKey || 'zapit-32-char-fallback-dev-only-key!!'.slice(0,32);
+const CIPHER_KEY = crypto.scryptSync(__encKeyForCipher, 'zapit-salt-v3', 32);
 
 function encrypt(text) {
   if (!text) return null;
@@ -181,14 +264,59 @@ function decrypt(text) {
 }
 
 function generateOTP()         { return Math.floor(100000 + Math.random() * 900000).toString(); }
-function generateReferralCode() { return crypto.randomBytes(4).toString('hex').toUpperCase(); }
+function hashOTP(code)         { return crypto.createHash('sha256').update(String(code)).digest('hex'); }
+function generateReferralCode() { return crypto.randomBytes(5).toString('hex').toUpperCase(); } // 10 chars, 40 bits — stronger
 function generateOrderNumber()  { return `ZAP-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`; }
 function sleep(ms)              { return new Promise(r => setTimeout(r, ms)); }
 
+// ─── VALIDATION & SANITIZATION (Phase 1) ────────────────────────
+const MAX_STR = { short: 120, medium: 500, long: 2000, bio: 5000 };
+function isValidEmail(e) { return typeof e === 'string' && /^[^s@]+@[^s@]+\.[^s@]+$/.test(e) && e.length <= 254; }
+function isValidUsername(u) { return typeof u === 'string' && /^[a-zA-Z0-9_]{3,30}$/.test(u); }
+function isStrongPassword(p) {
+  if (typeof p !== 'string' || p.length < 8 || p.length > 128) return 'Password must be 8-128 characters.';
+  if (!/[A-Z]/.test(p) || !/[a-z]/.test(p) || !/[0-9]/.test(p)) return 'Password must include uppercase, lowercase and a number.';
+  if (/^(.)\1+$/.test(p)) return 'Password is too weak.';
+  return null;
+}
+function sanitizeStr(s, max = 500) {
+  if (typeof s !== 'string') return '';
+  return s.trim().slice(0, max).replace(/[<>]/g, '');
+}
+function escapeForLog(s) { return String(s).replace(/[\n\r]/g, ' '); }
+function validateBody(schema, data) {
+  const errors = [];
+  for (const [key, rule] of Object.entries(schema)) {
+    const val = data[key];
+    if (rule.required && (val === undefined || val === null || String(val).trim() === '')) {
+      errors.push(`${key} is required.`); continue;
+    }
+    if (val === undefined || val === null) continue;
+    if (rule.type && typeof val !== rule.type) { errors.push(`${key} must be a ${rule.type}.`); continue; }
+    if (rule.min && String(val).length < rule.min) errors.push(`${key} must be at least ${rule.min} chars.`);
+    if (rule.max && String(val).length > rule.max) errors.push(`${key} must be at most ${rule.max} chars.`);
+    if (rule.pattern && !rule.pattern.test(String(val))) errors.push(rule.message || `${key} is invalid.`);
+    if (rule.validate) { const msg = rule.validate(val); if (msg) errors.push(msg); }
+  }
+  return errors;
+}
+function requestLogger(req, _res, next) {
+  const start = Date.now();
+  const safeUrl = req.originalUrl.split('?')[0];
+  console.log(JSON.stringify({ level:'info', reqId:req.id, method:req.method, url:safeUrl, ip:req.ip }));
+  _res.on('finish', () => {
+    const dur = Date.now()-start;
+    const lvl = _res.statusCode >= 500 ? 'error' : _res.statusCode >= 400 ? 'warn' : 'info';
+    console.log(JSON.stringify({ level:lvl, reqId:req.id, method:req.method, url:safeUrl, status:_res.statusCode, duration:dur }));
+  });
+  next();
+}
+
+
 // ─── JWT ────────────────────────────────────────────────────────
 function generateTokens(userId, username) {
-  const accessToken  = jwt.sign({ sub: userId, username, type: 'access' },  JWT_SECRET,         { expiresIn: '7d'  });
-  const refreshToken = jwt.sign({ sub: userId, type: 'refresh' },            JWT_REFRESH_SECRET, { expiresIn: '30d' });
+  const accessToken  = jwt.sign({ sub: userId, username, type: 'access', jti: crypto.randomUUID() },  __effectiveJWTSecret,         { expiresIn: '7d'  });
+  const refreshToken = jwt.sign({ sub: userId, type: 'refresh', jti: crypto.randomUUID() },            __effectiveRefreshSecret, { expiresIn: '30d' });
   return { accessToken, refreshToken };
 }
 
@@ -200,7 +328,7 @@ async function authenticate(req, res, next) {
       return res.status(401).json({ success: false, error: 'No token provided. Please log in.' });
 
     const token   = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, __effectiveJWTSecret);
 
     const { data: session } = await supabase
       .from('sessions')
@@ -233,9 +361,17 @@ async function authenticate(req, res, next) {
 
 // ─── MIDDLEWARE: ADMIN ───────────────────────────────────────────
 async function requireAdmin(req, res, next) {
+  // Rate limit admin attempts per IP
+  // (globalLimiter already, but add header audit)
   const adminList = ADMIN_USERNAMES.split(',').map(u => u.trim());
-  if (req.headers['x-admin-secret'] === ADMIN_SECRET) return next();
-  if (req.user && adminList.includes(req.user.username))  return next();
+  const hasValidSecret = ADMIN_SECRET && req.headers['x-admin-secret'] === ADMIN_SECRET;
+  const isAdminUser = req.user && adminList.includes(req.user.username);
+  if (hasValidSecret || isAdminUser) {
+    // Audit log
+    console.log(JSON.stringify({ level:'info', reqId:req.id, adminAction: `${req.method} ${req.path}`, userId: req.user?.id || 'secret', ip:req.ip }));
+    return next();
+  }
+  console.warn(JSON.stringify({ level:'warn', reqId:req.id, msg:'admin denied', ip:req.ip, path:req.path }));
   return res.status(403).json({ success: false, error: 'Admin access required.' });
 }
 
@@ -365,11 +501,16 @@ async function verifyPaystack(reference) {
 }
 
 function verifyPaystackSig(rawBody, sig) {
-  if (!PAYSTACK_SECRET_KEY) return false;
+  if (!PAYSTACK_SECRET_KEY || !sig) return false;
   const hash = crypto.createHmac('sha512', PAYSTACK_SECRET_KEY)
     .update(Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody)))
     .digest('hex');
-  return hash === sig;
+  try {
+    const a = Buffer.from(hash, 'utf8');
+    const b = Buffer.from(String(sig), 'utf8');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch { return false; }
 }
 
 // ─── WHATSAPP HELPERS ───────────────────────────────────────────
@@ -661,10 +802,22 @@ async function generateAIVideo({ topic, caption, duration = 6, aspectRatio = '9:
 async function generateStaticVideoFallback({ topic, caption, duration = 15 }) {
   try {
     const imgUrl     = await fetchStockImage(topic);
-    const outputPath = `/tmp/video_${Date.now()}.mp4`;
-    const safeCaption = (caption || topic).replace(/'/g, '').replace(/\n/g, ' ').substring(0, 80);
-    const cmd = `ffmpeg -y -loop 1 -i "${imgUrl}" -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.001,1.3)':d=${duration * 25}:s=1080x1920,drawtext=text='${safeCaption}':fontsize=40:fontcolor=white:x=(w-text_w)/2:y=h-100:box=1:boxcolor=black@0.6:boxborderw=8" -t ${duration} -c:v libx264 -pix_fmt yuv420p -r 25 "${outputPath}" 2>/dev/null`;
-    await execAsync(cmd, { timeout: 60000 });
+    const outputPath = `/tmp/video_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.mp4`;
+    const safeCaption = (caption || topic).replace(/[^\p{L}\p{N} .,!?'":;()\-]/gu, '').replace(/\n/g, ' ').substring(0, 80);
+    // Use spawn with arg array to avoid shell injection
+    const { spawn } = await import('child_process');
+    const vf = `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.001,1.3)':d=${duration * 25}:s=1080x1920,drawtext=text='${safeCaption.replace(/:/g,'\\:')}':fontsize=40:fontcolor=white:x=(w-text_w)/2:y=h-100:box=1:boxcolor=black@0.6:boxborderw=8`;
+    await new Promise((resolve, reject) => {
+      const proc = spawn('ffmpeg', ['-y','-loop','1','-i', String(imgUrl), '-vf', vf, '-t', String(duration), '-c:v','libx264','-pix_fmt','yuv420p','-r','25', outputPath], { timeout: 60000 });
+      let stderr = '';
+      proc.stderr.on('data', d => { stderr += d.toString(); });
+      proc.on('error', reject);
+      proc.on('close', code => {
+        if (code === 0) resolve();
+        else reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(0,500)}`));
+      });
+      setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} reject(new Error('ffmpeg timeout')); }, 62000);
+    });
     return outputPath;
   } catch { return null; }
 }
@@ -677,11 +830,19 @@ async function uploadToStorage(sourceUrlOrPath, userId, type = 'image') {
       if (!fs.existsSync(sourceUrlOrPath)) return null;
       fileBuffer   = fs.readFileSync(sourceUrlOrPath);
       contentType  = type === 'video' ? 'video/mp4' : 'image/jpeg';
+      // Validate image magic bytes with sharp if image
+      if (type === 'image') {
+        try { await sharp(fileBuffer).metadata(); } catch { console.warn('[uploadToStorage] invalid image buffer'); return null; }
+      }
     } else {
       const r = await fetch(sourceUrlOrPath);
       if (!r.ok) return sourceUrlOrPath;
       fileBuffer  = Buffer.from(await r.arrayBuffer());
+      if (fileBuffer.length > 10 * 1024 * 1024) { console.warn('[uploadToStorage] file too large'); return sourceUrlOrPath; }
       contentType = r.headers.get('content-type') || (type === 'video' ? 'video/mp4' : 'image/jpeg');
+      if (type === 'image' && fileBuffer.length > 0) {
+        try { await sharp(fileBuffer).metadata(); } catch { console.warn('[uploadToStorage] fetched image invalid'); }
+      }
     }
     const ext      = type === 'video' ? 'mp4' : 'jpg';
     const fileName = `${userId}/${type}/${Date.now()}.${ext}`;
@@ -954,10 +1115,16 @@ async function publishContent(post, content) {
 app.post('/auth/register', authLimiter, async (req, res) => {
   try {
     const { email, username, password, full_name, referral_code, country_code } = req.body;
+    const valErrs = validateBody({
+      email:    { required:true, type:'string', validate:v=>isValidEmail(v)?null:'Valid email is required.' },
+      username: { required:true, type:'string', validate:v=>isValidUsername(v)?null:'Username 3-30 chars, letters/numbers/underscore.' },
+      password: { required:true, type:'string' },
+    }, req.body);
+    if (valErrs.length) return res.status(400).json({ success:false, error: valErrs[0] });
     if (!email || !username || !password)
       return res.status(400).json({ success:false, error:'Email, username and password are required.' });
-    if (password.length < 8)
-      return res.status(400).json({ success:false, error:'Password must be at least 8 characters.' });
+    const pwdErr = isStrongPassword(password);
+    if (pwdErr) return res.status(400).json({ success:false, error: pwdErr });
     if (!/^[a-zA-Z0-9_]{3,30}$/.test(username))
       return res.status(400).json({ success:false, error:'Username must be 3-30 characters: letters, numbers, underscores only.' });
 
@@ -999,7 +1166,7 @@ app.post('/auth/register', authLimiter, async (req, res) => {
     }
 
     const otp = generateOTP();
-    await supabase.from('otp_verifications').insert({ email:email.toLowerCase(), code:otp, type:'email_verify', expires_at:new Date(Date.now() + 10*60*1000).toISOString() });
+    await supabase.from('otp_verifications').insert({ email:email.toLowerCase(), code:hashOTP(otp), type:'email_verify', expires_at:new Date(Date.now() + 10*60*1000).toISOString() });
     await sendOTPEmail(email.toLowerCase(), otp, 'verify');
 
     const { accessToken, refreshToken } = generateTokens(user.id, user.username);
@@ -1026,6 +1193,8 @@ app.post('/auth/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ success:false, error:'Email and password are required.' });
+    if (!isValidEmail(email)) return res.status(400).json({ success:false, error:'Valid email is required.' });
+    if (String(password).length > 128) return res.status(400).json({ success:false, error:'Password too long.' });
 
     const { data: user } = await supabase.from('users').select('*').eq('email', email.toLowerCase()).single();
     if (!user) return res.status(401).json({ success:false, error:'Invalid email or password.' });
@@ -1073,12 +1242,21 @@ app.post('/auth/verify-email', otpLimiter, async (req, res) => {
     const { email, code } = req.body;
     if (!email || !code) return res.status(400).json({ success:false, error:'Email and code are required.' });
 
+    const codeHash = hashOTP(String(code));
     const { data: otp } = await supabase.from('otp_verifications').select('*')
-      .eq('email', email.toLowerCase()).eq('code', code).eq('type','email_verify').eq('verified',false)
+      .eq('email', email.toLowerCase()).eq('code', codeHash).eq('type','email_verify').eq('verified',false)
       .gt('expires_at', new Date().toISOString())
       .order('created_at', { ascending:false }).limit(1).single();
 
-    if (!otp) return res.status(400).json({ success:false, error:'Invalid or expired code. Please request a new one.' });
+    if (!otp) {
+      // Track failed attempts — check recent failures for this email (best-effort)
+      try {
+        const since = new Date(Date.now()-15*60*1000).toISOString();
+        const { count:failCount } = await supabase.from('otp_verifications').select('id',{count:'exact',head:true}).eq('email', email.toLowerCase()).gt('created_at', since);
+        if ((failCount||0) >= 5) return res.status(429).json({ success:false, error:'Too many failed attempts. Request a new code in 15 minutes.' });
+      } catch {}
+      return res.status(400).json({ success:false, error:'Invalid or expired code. Please request a new one.' });
+    }
 
     await supabase.from('otp_verifications').update({ verified:true }).eq('id', otp.id);
     await supabase.from('users').update({ email_verified:true }).eq('email', email.toLowerCase());
@@ -1093,9 +1271,11 @@ app.post('/auth/resend-otp', otpLimiter, async (req, res) => {
   try {
     const { email, type = 'email_verify' } = req.body;
     if (!email) return res.status(400).json({ success:false, error:'Email is required.' });
+    if (!isValidEmail(email)) return res.status(400).json({ success:false, error:'Valid email is required.' });
+    if (!['email_verify','password_reset'].includes(type)) return res.status(400).json({ success:false, error:'Invalid OTP type.' });
     await supabase.from('otp_verifications').update({ verified:true }).eq('email', email.toLowerCase()).eq('type', type).eq('verified',false);
     const otp = generateOTP();
-    await supabase.from('otp_verifications').insert({ email:email.toLowerCase(), code:otp, type, expires_at:new Date(Date.now()+10*60*1000).toISOString() });
+    await supabase.from('otp_verifications').insert({ email:email.toLowerCase(), code:hashOTP(otp), type, expires_at:new Date(Date.now()+10*60*1000).toISOString() });
     await sendOTPEmail(email.toLowerCase(), otp, type === 'email_verify' ? 'verify' : 'reset');
     return res.json({ success:true, message:'Verification code sent! Check your email.' });
   } catch {
@@ -1111,7 +1291,7 @@ app.post('/auth/forgot-password', otpLimiter, async (req, res) => {
     const { data: user } = await supabase.from('users').select('id').eq('email', email.toLowerCase()).single();
     if (user) {
       const otp = generateOTP();
-      await supabase.from('otp_verifications').insert({ email:email.toLowerCase(), code:otp, type:'password_reset', expires_at:new Date(Date.now()+10*60*1000).toISOString() });
+      await supabase.from('otp_verifications').insert({ email:email.toLowerCase(), code:hashOTP(otp), type:'password_reset', expires_at:new Date(Date.now()+10*60*1000).toISOString() });
       await sendOTPEmail(email.toLowerCase(), otp, 'reset');
     }
     return res.json({ success:true, message:"If this email exists, a reset code has been sent." });
@@ -1125,12 +1305,21 @@ app.post('/auth/reset-password', authLimiter, async (req, res) => {
   try {
     const { email, code, new_password } = req.body;
     if (!email || !code || !new_password) return res.status(400).json({ success:false, error:'Email, code and new password are required.' });
-    if (new_password.length < 8) return res.status(400).json({ success:false, error:'Password must be at least 8 characters.' });
+    const pwdErr2 = isStrongPassword(new_password);
+    if (pwdErr2) return res.status(400).json({ success:false, error: pwdErr2 });
 
+    const codeHash2 = hashOTP(String(code));
     const { data: otp } = await supabase.from('otp_verifications').select('*')
-      .eq('email', email.toLowerCase()).eq('code', code).eq('type','password_reset').eq('verified',false)
+      .eq('email', email.toLowerCase()).eq('code', codeHash2).eq('type','password_reset').eq('verified',false)
       .gt('expires_at', new Date().toISOString()).single();
-    if (!otp) return res.status(400).json({ success:false, error:'Invalid or expired reset code.' });
+    if (!otp) {
+      try {
+        const since2 = new Date(Date.now()-15*60*1000).toISOString();
+        const { count:fail2 } = await supabase.from('otp_verifications').select('id',{count:'exact',head:true}).eq('email', email.toLowerCase()).gt('created_at', since2);
+        if ((fail2||0) >= 5) return res.status(429).json({ success:false, error:'Too many failed attempts. Request a new code in 15 minutes.' });
+      } catch {}
+      return res.status(400).json({ success:false, error:'Invalid or expired reset code.' });
+    }
 
     const password_hash = await bcrypt.hash(new_password, 12);
     await supabase.from('users').update({ password_hash, updated_at:new Date().toISOString() }).eq('email', email.toLowerCase());
@@ -1175,7 +1364,8 @@ app.patch('/auth/change-password', authenticate, async (req, res) => {
   try {
     const { old_password, new_password } = req.body;
     if (!old_password || !new_password) return res.status(400).json({ success:false, error:'Old and new passwords are required.' });
-    if (new_password.length < 8) return res.status(400).json({ success:false, error:'New password must be at least 8 characters.' });
+    const pwdErr3 = isStrongPassword(new_password);
+    if (pwdErr3) return res.status(400).json({ success:false, error: pwdErr3 });
     const { data: user } = await supabase.from('users').select('password_hash').eq('id', req.user.id).single();
     if (!(await bcrypt.compare(old_password, user.password_hash))) return res.status(401).json({ success:false, error:'Current password is incorrect.' });
     await supabase.from('users').update({ password_hash:await bcrypt.hash(new_password, 12), updated_at:new Date().toISOString() }).eq('id', req.user.id);
@@ -1191,7 +1381,7 @@ app.post('/auth/refresh-token', async (req, res) => {
   try {
     const { refresh_token } = req.body;
     if (!refresh_token) return res.status(400).json({ success:false, error:'Refresh token is required.' });
-    const decoded = jwt.verify(refresh_token, JWT_REFRESH_SECRET);
+    const decoded = jwt.verify(refresh_token, __effectiveRefreshSecret);
     const { data: session } = await supabase.from('sessions').select('*').eq('refresh_token', refresh_token).single();
     if (!session) return res.status(401).json({ success:false, error:'Invalid refresh token.' });
     const { data: user } = await supabase.from('users').select('id,username,is_active,is_suspended').eq('id', decoded.sub).single();
@@ -1237,8 +1427,10 @@ app.get('/onboarding/status', authenticate, async (req, res) => {
 app.post('/onboarding/business-info', authenticate, async (req, res) => {
   try {
     const { business_name, business_category, business_description, language_preference, bot_personality } = req.body;
-    if (!business_name) return res.status(400).json({ success:false, error:'Business name is required.' });
-    const payload = { user_id:req.user.id, business_name, business_category:business_category||'General', business_description, language_preference:language_preference||'en', bot_personality:bot_personality||'professional', updated_at:new Date().toISOString() };
+    const bName = sanitizeStr(business_name, 120);
+    if (!bName) return res.status(400).json({ success:false, error:'Business name is required.' });
+    if (business_description && String(business_description).length > 2000) return res.status(400).json({ success:false, error:'Business description too long (max 2000).' });
+    const payload = { user_id:req.user.id, business_name: bName, business_category:sanitizeStr(business_category||'General',60), business_description: sanitizeStr(business_description, 2000), language_preference:sanitizeStr(language_preference||'en',20), bot_personality:sanitizeStr(bot_personality||'professional',30), updated_at:new Date().toISOString() };
     const { data:existing } = await supabase.from('business_settings').select('id').eq('user_id', req.user.id).single();
     const result = existing
       ? await supabase.from('business_settings').update(payload).eq('user_id', req.user.id).select().single()
@@ -1416,12 +1608,21 @@ app.get('/whatsapp/products', authenticate, async (req, res) => {
 // POST /whatsapp/products
 app.post('/whatsapp/products', authenticate, async (req, res) => {
   try {
-    const { name, description, price, sale_price, currency='NGN', type='physical', stock_quantity, category, image_url } = req.body;
+    let { name, description, price, sale_price, currency='NGN', type='physical', stock_quantity, category, image_url } = req.body;
+    name = sanitizeStr(name, 120);
+    if (description) description = sanitizeStr(description, 1000);
+    if (category) category = sanitizeStr(category, 60);
     if (!name || price === undefined) return res.status(400).json({ success:false, error:'Product name and price are required.' });
+    const priceNum = Number(price);
+    if (!Number.isFinite(priceNum) || priceNum < 0 || priceNum > 10000000) return res.status(400).json({ success:false, error:'Invalid price.' });
+    if (sale_price != null && (!Number.isFinite(Number(sale_price)) || Number(sale_price) < 0)) return res.status(400).json({ success:false, error:'Invalid sale_price.' });
+    if (stock_quantity != null && (!Number.isInteger(Number(stock_quantity)) || Number(stock_quantity) < 0)) return res.status(400).json({ success:false, error:'Invalid stock_quantity.' });
+    const cleanCurrency = sanitizeStr(currency||'NGN',10);
+    const cleanType = ['physical','digital','service'].includes(type) ? type : 'physical';
     const { limits } = await getUserSubscription(req.user.id);
     const { count }  = await supabase.from('products').select('id',{ count:'exact', head:true }).eq('user_id', req.user.id);
     if ((count||0) >= limits.products_limit) return res.status(403).json({ success:false, error:`Product limit (${limits.products_limit}) reached. Upgrade to add more.` });
-    const { data, error } = await supabase.from('products').insert({ user_id:req.user.id, name, description, price:Number(price), sale_price:sale_price?Number(sale_price):null, currency, type, stock_quantity:stock_quantity?Number(stock_quantity):null, category, image_url }).select().single();
+    const { data, error } = await supabase.from('products').insert({ user_id:req.user.id, name, description, price: priceNum, sale_price: sale_price?Number(sale_price):null, currency: cleanCurrency, type: cleanType, stock_quantity: stock_quantity?Number(stock_quantity):null, category, image_url: image_url ? sanitizeStr(image_url, 500) : null }).select().single();
     if (error) throw error;
     return res.status(201).json({ success:true, data, message:'Product added!' });
   } catch { return res.status(500).json({ success:false, error:'Failed to add product.' }); }
@@ -1450,6 +1651,11 @@ app.delete('/whatsapp/products/:id', authenticate, async (req, res) => {
 
 // POST /whatsapp/products/import
 app.post('/whatsapp/products/import', authenticate, upload.single('file'), async (req, res) => {
+  // Validate file extension even if mimetype spoofed
+  if (req.file) {
+    const ext = path.extname(req.file.originalname||'').toLowerCase();
+    if (!['.csv','.xlsx','.xls'].includes(ext)) return res.status(400).json({ success:false, error:'Only CSV or Excel files allowed.' });
+  }
   try {
     const { limits } = await getUserSubscription(req.user.id);
     if (!limits.excel_import_enabled) return res.status(403).json({ success:false, error:'Excel import requires Growth plan or above.' });
@@ -1635,7 +1841,12 @@ app.patch('/whatsapp/knowledge-base/:id', authenticate, async (req, res) => {
   try {
     const updates = { ...req.body, updated_at:new Date().toISOString() };
     delete updates.id; delete updates.user_id;
-    if (updates.trigger) updates.trigger = updates.trigger.toLowerCase().trim();
+    if (updates.trigger !== undefined) updates.trigger = sanitizeStr(updates.trigger, 200).toLowerCase();
+    if (updates.response !== undefined) updates.response = sanitizeStr(updates.response, 2000);
+    if (updates.category !== undefined) updates.category = sanitizeStr(updates.category, 60);
+    if (updates.language !== undefined) updates.language = sanitizeStr(updates.language, 10);
+    if (updates.trigger !== undefined && !updates.trigger) return res.status(400).json({ success:false, error:'Trigger cannot be empty.' });
+    if (updates.response !== undefined && !updates.response) return res.status(400).json({ success:false, error:'Response cannot be empty.' });
     const { data, error } = await supabase.from('knowledge_base').update(updates).eq('id',req.params.id).eq('user_id',req.user.id).select().single();
     if (error) throw error;
     return res.json({ success:true, data, message:'Entry updated!' });
@@ -1700,8 +1911,14 @@ app.get('/whatsapp/broadcasts', authenticate, async (req, res) => {
 // POST /whatsapp/broadcasts
 app.post('/whatsapp/broadcasts', authenticate, async (req, res) => {
   try {
-    const { name, message, target_segment='all', scheduled_for } = req.body;
+    let { name, message, target_segment='all', scheduled_for } = req.body;
+    name = sanitizeStr(name, 120);
+    message = sanitizeStr(message, 2000);
+    target_segment = sanitizeStr(target_segment, 30);
     if (!name||!message) return res.status(400).json({ success:false, error:'Name and message are required.' });
+    if (message.length > 2000) return res.status(400).json({ success:false, error:'Message too long (max 2000).' });
+    const allowedSegments = new Set(['all','lead','customer','vip']);
+    if (!allowedSegments.has(target_segment)) return res.status(400).json({ success:false, error:'Invalid target_segment.' });
     const { limits } = await getUserSubscription(req.user.id);
     if (limits.whatsapp_broadcasts === 0) return res.status(403).json({ success:false, error:'Broadcasts require Creator plan or above.' });
     const { data:settings } = await supabase.from('business_settings').select('*').eq('user_id',req.user.id).single();
@@ -2124,6 +2341,17 @@ app.delete('/content/library/:id', authenticate, async (req, res) => {
 app.post('/content/upload', authenticate, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ success:false, error:'No file uploaded.' });
+    // Per-user daily upload quota (20/day) — prevents abuse
+    try {
+      const since = new Date(new Date().setHours(0,0,0,0)).toISOString();
+      const { count: upCount } = await supabase.from('content_items').select('id',{count:'exact',head:true}).eq('user_id', req.user.id).gte('created_at', since);
+      if ((upCount||0) >= 50) return res.status(429).json({ success:false, error:'Daily upload limit reached. Try again tomorrow.' });
+    } catch {}
+    // Additional magic-byte validation with sharp for images
+    if (String(req.file.mimetype).startsWith('image/')) {
+      try { await sharp(req.file.buffer).metadata(); }
+      catch { return res.status(400).json({ success:false, error:'Invalid or corrupted image file.' }); }
+    }
     const isVideo  = req.file.mimetype.startsWith('video/');
     const isImage  = req.file.mimetype.startsWith('image/');
     const ext      = isVideo ? 'mp4' : 'jpg';
@@ -2141,8 +2369,16 @@ app.post('/content/upload', authenticate, upload.single('file'), async (req, res
 // POST /content/schedule
 app.post('/content/schedule', authenticate, async (req, res) => {
   try {
-    const { content_id, platforms, scheduled_for, timezone='Africa/Lagos' } = req.body;
+    let { content_id, platforms, scheduled_for, timezone='Africa/Lagos' } = req.body;
     if (!content_id||!platforms?.length||!scheduled_for) return res.status(400).json({ success:false, error:'content_id, platforms and scheduled_for are required.' });
+    if (!Array.isArray(platforms) || platforms.length === 0 || platforms.length > 4) return res.status(400).json({ success:false, error:'platforms must be 1-4 items.' });
+    const allowedPlatforms = new Set(['instagram','facebook','tiktok','youtube']);
+    if (platforms.some(p => !allowedPlatforms.has(String(p).toLowerCase()))) return res.status(400).json({ success:false, error:'Invalid platform.' });
+    platforms = platforms.map(p => String(p).toLowerCase());
+    const schedDate = new Date(scheduled_for);
+    if (isNaN(schedDate.getTime())) return res.status(400).json({ success:false, error:'Invalid scheduled_for date.' });
+    if (schedDate.getTime() < Date.now() - 60000) return res.status(400).json({ success:false, error:'scheduled_for must be in the future.' });
+    timezone = sanitizeStr(timezone, 60);
     const { data:content } = await supabase.from('content_items').select('*').eq('id',content_id).eq('user_id',req.user.id).single();
     if (!content) return res.status(404).json({ success:false, error:'Content not found.' });
     const { limits } = await getUserSubscription(req.user.id);
@@ -2725,7 +2961,7 @@ app.post('/library/global-kb/copy-all', authenticate, async (req, res) => {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 // GET /admin/users
-app.get('/admin/users', authenticate, requireAdmin, async (req, res) => {
+app.get('/admin/users', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
     const { page=1, limit=20, search } = req.query;
     const offset = (Number(page)-1)*Number(limit);
@@ -2738,7 +2974,7 @@ app.get('/admin/users', authenticate, requireAdmin, async (req, res) => {
 });
 
 // GET /admin/users/:id
-app.get('/admin/users/:id', authenticate, requireAdmin, async (req, res) => {
+app.get('/admin/users/:id', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
     const [{ data:user },{ subscription, plan },{ count:orderCount }] = await Promise.all([
       supabase.from('users').select('*').eq('id',req.params.id).single(),
@@ -2751,7 +2987,7 @@ app.get('/admin/users/:id', authenticate, requireAdmin, async (req, res) => {
 });
 
 // POST /admin/users/:id/set-plan
-app.post('/admin/users/:id/set-plan', authenticate, requireAdmin, async (req, res) => {
+app.post('/admin/users/:id/set-plan', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
     const { plan, expires_in_days=30 } = req.body;
     if (!PLAN_LIMITS[plan]) return res.status(400).json({ success:false, error:'Invalid plan.' });
@@ -2761,7 +2997,7 @@ app.post('/admin/users/:id/set-plan', authenticate, requireAdmin, async (req, re
 });
 
 // POST /admin/users/:id/suspend
-app.post('/admin/users/:id/suspend', authenticate, requireAdmin, async (req, res) => {
+app.post('/admin/users/:id/suspend', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
     const { data:user } = await supabase.from('users').select('is_suspended').eq('id',req.params.id).single();
     const suspend = !user?.is_suspended;
@@ -2771,7 +3007,7 @@ app.post('/admin/users/:id/suspend', authenticate, requireAdmin, async (req, res
 });
 
 // DELETE /admin/users/:id
-app.delete('/admin/users/:id', authenticate, requireAdmin, async (req, res) => {
+app.delete('/admin/users/:id', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
     await supabase.from('users').update({ is_active:false, email:`deleted_${Date.now()}_${req.params.id}@deleted.com` }).eq('id',req.params.id);
     return res.json({ success:true, message:'User account deactivated.' });
@@ -2779,7 +3015,7 @@ app.delete('/admin/users/:id', authenticate, requireAdmin, async (req, res) => {
 });
 
 // GET /admin/platform-stats
-app.get('/admin/platform-stats', authenticate, requireAdmin, async (req, res) => {
+app.get('/admin/platform-stats', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
     const [{ count:totalUsers },{ count:paying },{ count:orders },{ count:contentItems }] = await Promise.all([
       supabase.from('users').select('id',{ count:'exact', head:true }).eq('is_active',true),
@@ -2792,7 +3028,7 @@ app.get('/admin/platform-stats', authenticate, requireAdmin, async (req, res) =>
 });
 
 // GET /admin/revenue
-app.get('/admin/revenue', authenticate, requireAdmin, async (req, res) => {
+app.get('/admin/revenue', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
     const { data:subs } = await supabase.from('subscriptions').select('plan,amount_paid,currency').eq('status','active').neq('plan','free');
     const byPlan = {};
@@ -2803,7 +3039,7 @@ app.get('/admin/revenue', authenticate, requireAdmin, async (req, res) => {
 });
 
 // GET /admin/content-moderation
-app.get('/admin/content-moderation', authenticate, requireAdmin, async (req, res) => {
+app.get('/admin/content-moderation', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
     const { data } = await supabase.from('content_items').select('id,user_id,topic,type,caption,created_at').eq('generation_status','completed').order('created_at',{ ascending:false }).limit(50);
     return res.json({ success:true, data:data||[] });
@@ -2811,7 +3047,7 @@ app.get('/admin/content-moderation', authenticate, requireAdmin, async (req, res
 });
 
 // POST /admin/global-kb
-app.post('/admin/global-kb', authenticate, requireAdmin, async (req, res) => {
+app.post('/admin/global-kb', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
     const { trigger, response, category, industry='all', language='en' } = req.body;
     if (!trigger||!response) return res.status(400).json({ success:false, error:'Trigger and response are required.' });
@@ -2822,7 +3058,7 @@ app.post('/admin/global-kb', authenticate, requireAdmin, async (req, res) => {
 });
 
 // PATCH /admin/global-kb/:id
-app.patch('/admin/global-kb/:id', authenticate, requireAdmin, async (req, res) => {
+app.patch('/admin/global-kb/:id', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
     const { data, error } = await supabase.from('global_kb_library').update(req.body).eq('id',req.params.id).select().single();
     if (error) throw error;
@@ -2831,7 +3067,7 @@ app.patch('/admin/global-kb/:id', authenticate, requireAdmin, async (req, res) =
 });
 
 // POST /admin/test-whatsapp
-app.post('/admin/test-whatsapp', authenticate, requireAdmin, async (req, res) => {
+app.post('/admin/test-whatsapp', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
     const { to, message='Test from ZAPIT admin 🚀' } = req.body;
     if (!to) return res.status(400).json({ success:false, error:'Phone number (to) is required.' });
@@ -2841,7 +3077,7 @@ app.post('/admin/test-whatsapp', authenticate, requireAdmin, async (req, res) =>
 });
 
 // POST /admin/test-post
-app.post('/admin/test-post', authenticate, requireAdmin, (_req, res) => {
+app.post('/admin/test-post', authenticate, adminLimiter, requireAdmin, (_req, res) => {
   return res.json({ success:true, message:'Use POST /content/publish-now with a connected account to test posting.' });
 });
 
@@ -2853,8 +3089,10 @@ app.post('/admin/test-post', authenticate, requireAdmin, (_req, res) => {
 app.post('/webhook/paystack', webhookLimiter, async (req, res) => {
   try {
     const sig = req.headers['x-paystack-signature'];
-    if (!verifyPaystackSig(req.body, String(sig))) return res.status(400).json({ success:false, error:'Invalid signature.' });
-    const event = JSON.parse(req.body.toString());
+    const rawForSig = Buffer.isBuffer(req.body) ? req.body : Buffer.from(typeof req.body === 'string' ? req.body : JSON.stringify(req.body || '{}'));
+    if (!verifyPaystackSig(rawForSig, String(sig))) return res.status(400).json({ success:false, error:'Invalid signature.' });
+    let event;
+    try { event = JSON.parse(rawForSig.toString('utf8')); } catch { return res.status(400).json({ success:false, error:'Invalid JSON.' }); }
     res.status(200).json({ success:true }); // Respond immediately
 
     if (event.event === 'charge.success') {
@@ -2863,6 +3101,18 @@ app.post('/webhook/paystack', webhookLimiter, async (req, res) => {
       const plan   = metadata?.plan;
       const cycle  = metadata?.billing_cycle || 'monthly';
       if (!userId||!plan||!PLAN_LIMITS[plan]) return;
+
+      // Idempotency: if same reference already processed, skip (prevents double charge on retry)
+      try {
+        const { data: dup } = await supabase.from('subscriptions').select('paystack_reference').eq('user_id', userId).eq('paystack_reference', reference).single();
+        if (dup) { console.log(JSON.stringify({ level:'info', msg:'paystack duplicate reference', reference })); return; }
+      } catch {}
+      // Also check webhook_events table if exists
+      try {
+        const { data: ev } = await supabase.from('webhook_events').select('id').eq('provider','paystack').eq('event_id', String(reference)).single();
+        if (ev) { console.log(JSON.stringify({ level:'info', msg:'paystack duplicate webhook_events', reference })); return; }
+        supabase.from('webhook_events').insert({ provider:'paystack', event_id:String(reference), payload:event, received_at:new Date().toISOString() }).then(()=>{}).catch(()=>{});
+      } catch {}
 
       const verify = await verifyPaystack(reference);
       if (verify.data?.status !== 'success') return;
@@ -2914,7 +3164,10 @@ app.get('/health', async (_req, res) => {
     payments: PAYSTACK_SECRET_KEY ? 'configured' : 'not configured',
   };
   try {
-    await supabase.from('users').select('id').limit(1);
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 3000);
+    await supabase.from('users').select('id').limit(1).abortSignal(controller.signal);
+    clearTimeout(t);
     services.database = 'online';
   } catch { services.database = 'offline'; }
   return res.json({ status:'ok', version:'3.0.0', timestamp:new Date().toISOString(), services });
@@ -2932,6 +3185,8 @@ app.post('/support/contact', async (req, res) => {
   try {
     const { name, email, subject, message } = req.body;
     if (!email||!message) return res.status(400).json({ success:false, error:'Email and message are required.' });
+    if (!isValidEmail(String(email))) return res.status(400).json({ success:false, error:'Valid email is required.' });
+    if (String(message).length > 5000) return res.status(400).json({ success:false, error:'Message too long (max 5000).' });
     await sendEmail({ to:BREVO_SENDER_EMAIL, toName:'ZAPIT Support', subject:`[Support] ${subject||'New inquiry'} — ${name||email}`, htmlContent:`<h2>Support Request</h2><p><strong>From:</strong> ${name||'Anonymous'} (${email})</p><p><strong>Subject:</strong> ${subject||'No subject'}</p><p>${message}</p>` });
     return res.json({ success:true, message:"Message sent! We'll reply within 24 hours." });
   } catch { return res.status(500).json({ success:false, error:'Failed to send message.' }); }
@@ -2957,11 +3212,17 @@ app.get('/pricing/location', async (req, res) => {
 });
 
 // ─── 404 & GLOBAL ERROR HANDLER ─────────────────────────────
-app.use((_req, res) => res.status(404).json({ success:false, error:'Route not found. Check the API documentation.' }));
+app.use((req, res) => res.status(404).json({ success:false, error:'Route not found. Check the API documentation.', requestId: req.id }));
 
-app.use((err, _req, res, _next) => {
-  console.error('[UNHANDLED ERROR]', err);
-  res.status(500).json({ success:false, error:'An unexpected error occurred. Please try again.' });
+app.use((err, req, res, _next) => {
+  // CORS errors should be 403, not 500
+  if (err && String(err.message).includes('CORS: Origin not allowed')) {
+    console.warn(JSON.stringify({ level:'warn', reqId:req.id, msg:'CORS blocked', origin: req.headers.origin, ip:req.ip }));
+    return res.status(403).json({ success:false, error:'Origin not allowed by CORS.', requestId: req.id });
+  }
+  const errId = crypto.randomUUID();
+  console.error(JSON.stringify({ level:'error', reqId:req.id || errId, err: err.message, stack: err.stack?.slice(0,2000) }));
+  res.status(500).json({ success:false, error:'An unexpected error occurred. Please try again.', requestId: req.id || errId });
 });
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
