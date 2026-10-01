@@ -14,7 +14,11 @@
     "security:check": "node scripts/security-check.mjs",
     "test:phase1": "node scripts/security-check.mjs && node --input-type=module --check < index.js && echo 'Phase 1 smoke OK'",
     "generate:pricing": "node scripts/generate-pricing.mjs",
-    "test:phase2": "node scripts/generate-pricing.mjs && node --input-type=module --check < index.js && node scripts/security-check.mjs && echo 'Phase 2 smoke OK'"
+    "test:phase2": "node scripts/generate-pricing.mjs && node --input-type=module --check < index.js && node scripts/security-check.mjs && echo 'Phase 2 smoke OK'",
+    "test": "node tests/unit/validation.test.mjs && node tests/unit/plans.test.mjs && node tests/unit/cache.test.mjs && node tests/unit/crypto.test.mjs && echo 'All unit tests passed'",
+    "test:unit": "npm test",
+    "test:integration": "node tests/integration/health.test.mjs",
+    "test:all": "npm test && npm run test:integration"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",

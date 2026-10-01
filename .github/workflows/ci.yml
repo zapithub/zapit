@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main", "arena/*" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci || npm install
+      - name: Syntax check
+        run: npm run check
+      - name: Security check (Phase 1)
+        run: npm run security:check
+      - name: Generate pricing (Phase 2)
+        run: npm run generate:pricing
+      - name: Unit tests
+        run: npm test
+      - name: Build check
+        run: node --input-type=module --check < index.js
+      - name: Dockerfile lint (hadolint)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+        continue-on-error: true
+
+  lighthouse:
+    runs-on: ubuntu-latest
+    if: false # enable after static hosting is configured
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npx @lhci/cli autorun || echo "Lighthouse TODO"

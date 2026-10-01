@@ -1,0 +1,17 @@
+version: "3.8"
+services:
+  zapit:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      PORT: 3000
+      NODE_ENV: development
+      FRONTEND_URL: http://localhost:5500
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
