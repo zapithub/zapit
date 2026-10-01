@@ -61,9 +61,39 @@ server.stdout.on('data', d => { serverLog += d; });
 server.stderr.on('data', d => { serverLog += d; });
 
 const base = `http://127.0.0.1:${PORT}`;
-for (let i = 0; i < 40; i++) {
-  try { const r = await fetch(`${base}/health`); if (r.ok) break; } catch { /* not up yet */ }
-  await new Promise(r => setTimeout(r, 250));
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Boot must be proven, not assumed (a silent fall-through made every later
+// check fail with a confusing message instead of naming the real problem).
+let booted = false;
+for (let i = 0; i < 80; i++) {
+  try { const r = await fetch(`${base}/health`); if (r.ok) { booted = true; break; } } catch { /* not up yet */ }
+  await sleep(250);
+}
+if (!booted) {
+  console.log(`::error::broadcast smoke: the API never answered /health on port ${PORT}`);
+  console.log(serverLog.slice(-3000));
+  server.kill('SIGTERM'); graph.closeAllConnections?.(); graph.close(); await fake.stop();
+  process.exit(1);
+}
+
+/**
+ * Wait until the API has finished sending the broadcast: the route answers with
+ * a plan and dispatches in the background, so a fixed sleep raced slow machines.
+ * Polls the recorded Graph payloads and the broadcast rows until they settle.
+ */
+async function settle({ timeout = 30000, quietMs = 400, minSends = 0 } = {}) {
+  const snapshot = () => JSON.stringify({ sent: sent.length, broadcasts: fake.db.broadcasts });
+  let last = snapshot(), lastChange = Date.now();
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    await sleep(100);
+    if (sent.length < minSends) continue;
+    const now = snapshot();
+    if (now !== last) { last = now; lastChange = Date.now(); }
+    else if (Date.now() - lastChange >= quietMs) return true;
+  }
+  return false;
 }
 
 const results = [];
@@ -95,7 +125,7 @@ const b1Res = await fetch(`${base}/whatsapp/broadcasts`, {
   body: JSON.stringify({ name: 'Flash sale', message: 'Hello {name}, 20% off today!', target_segment: 'all' }),
 });
 const b1 = await b1Res.json();
-await new Promise(r => setTimeout(r, 1500));
+await settle({ minSends: 2 });
 check('free-text broadcast accepted', b1Res.status === 201, b1?.message);
 check('only in-window contacts were sent to', b1?.counts?.text === 2, `text=${b1?.counts?.text} template=${b1?.counts?.template} skipped=${b1?.counts?.skipped_window}`);
 check('the cold contacts were skipped, not free-texted', b1?.counts?.skipped_window === 2 && (b1?.data?.results?.skipped_reasons || []).includes('outside_24h_window'), `skipped=${b1?.counts?.skipped_window}`);
@@ -109,7 +139,7 @@ const b2Res = await fetch(`${base}/whatsapp/broadcasts`, {
   body: JSON.stringify({ name: 'October promo', message: 'Hello {name}!', target_segment: 'all', template_id: tpl?.data?.id }),
 });
 const b2 = await b2Res.json();
-await new Promise(r => setTimeout(r, 1500));
+await settle({ minSends: 4 });
 check('template broadcast accepted', b2Res.status === 201, b2?.message);
 check('in-window contacts got free text, cold ones the template',
   b2?.counts?.text === 2 && b2?.counts?.template === 2, `text=${b2?.counts?.text} template=${b2?.counts?.template} skipped=${b2?.counts?.skipped_window}`);
@@ -130,10 +160,10 @@ check('scheduled broadcast stored as scheduled', schedRes.status === 201 && sche
 // The scheduler must pick it up on its own — this is the W-03 half that never
 // happened: the row used to sit in 'scheduled' forever.
 let executed = null;
-for (let i = 0; i < 20; i++) {
-  await new Promise(r => setTimeout(r, 1500));
+for (let i = 0; i < 60; i++) {
   executed = fake.db.broadcasts.find(b => b.id === sched?.data?.id);
   if (executed?.status === 'sent') break;
+  await sleep(1000);
 }
 check('the scheduler executed the scheduled broadcast',
   executed?.status === 'sent', `status=${executed?.status} sent=${executed?.sent_count} skipped=${executed?.skipped_count} attempts=${executed?.results?.sent ?? 0}`);
@@ -148,8 +178,12 @@ console.log(JSON.stringify(fake.db.broadcasts.map(b => ({
 })), null, 2));
 
 const failed = results.filter(r => !r.ok).length;
-if (failed) console.log(`\n${failed} smoke check(s) FAILED\n\nserver log:\n${serverLog.slice(-1500)}`);
-else console.log('\nAll broadcast-window smoke checks passed ✅');
+if (failed) {
+  // GitHub turns these into run annotations, so a failure is readable even when
+  // the raw job log cannot be downloaded.
+  for (const f of results.filter(r => !r.ok)) console.log(`::error::broadcast smoke — ${f.label}${f.detail ? ` (${f.detail})` : ''}`);
+  console.log(`\n${failed} smoke check(s) FAILED\n\nserver log:\n${serverLog.slice(-1500)}`);
+} else console.log('\nAll broadcast-window smoke checks passed ✅');
 
 server.kill('SIGTERM');
 graph.closeAllConnections?.();

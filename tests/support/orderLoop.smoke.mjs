@@ -74,9 +74,43 @@ server.stdout.on('data', d => { serverLog += d; });
 server.stderr.on('data', d => { serverLog += d; });
 
 const base = `http://127.0.0.1:${PORT}`;
-for (let i = 0; i < 40; i++) {
-  try { const r = await fetch(`${base}/health`); if (r.ok) break; } catch { /* not up yet */ }
-  await new Promise(r => setTimeout(r, 250));
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Boot must be proven, not assumed: a silent fall-through turned every later
+// check into a confusing failure instead of "the API never came up".
+let booted = false;
+for (let i = 0; i < 80; i++) {
+  try { const r = await fetch(`${base}/health`); if (r.ok) { booted = true; break; } } catch { /* not up yet */ }
+  await sleep(250);
+}
+if (!booted) {
+  console.log(`::error::order-loop smoke: the API never answered /health on port ${PORT}`);
+  console.log(serverLog.slice(-3000));
+  server.kill('SIGTERM'); await fake.stop(); paystack.close();
+  process.exit(1);
+}
+
+/**
+ * Wait until the API has finished reacting to a delivery.
+ *
+ * The handler answers 200 *before* it does its work (Meta's contract), so the
+ * old fixed 2-second sleeps raced a slow machine — green locally, red on CI.
+ * This polls the fake database until it stops changing, with a hard ceiling.
+ */
+async function settle({ timeout = 30000, quietMs = 400 } = {}) {
+  const snapshot = () => JSON.stringify({
+    messages: fake.db.messages, orders: fake.db.orders, order_drafts: fake.db.order_drafts,
+    events: fake.db.webhook_events, contacts: fake.db.contacts, conversations: fake.db.conversations,
+  });
+  let last = snapshot(), lastChange = Date.now();
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    await sleep(100);
+    const now = snapshot();
+    if (now !== last) { last = now; lastChange = Date.now(); }
+    else if (Date.now() - lastChange >= quietMs) return true;
+  }
+  return false;
 }
 
 const waSend = async (text, id) => {
@@ -92,7 +126,7 @@ const waSend = async (text, id) => {
   const res = await fetch(`${base}/webhook/whatsapp`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': `sha256=${sig}` }, body,
   });
-  await new Promise(r => setTimeout(r, 2000));   // let the background handler finish
+  await settle();   // let the background handler finish (polled, never a fixed sleep)
   return res.status;
 };
 
@@ -102,7 +136,7 @@ const paystackWebhook = async (reference) => {
   const res = await fetch(`${base}/webhook/paystack`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'x-paystack-signature': sig }, body,
   });
-  await new Promise(r => setTimeout(r, 2000));
+  await settle();
   return res.status;
 };
 
@@ -148,8 +182,12 @@ console.log(JSON.stringify(fake.db.orders.map(o => ({
 })), null, 2));
 
 const failed = results.filter(r => !r.ok).length;
-if (failed) console.log(`\n${failed} smoke check(s) FAILED\n\nserver log:\n${serverLog.slice(-2000)}`);
-else console.log('\nAll order-loop smoke checks passed ✅');
+if (failed) {
+  // GitHub turns these into run annotations, so a failure is readable even when
+  // the raw job log cannot be downloaded.
+  for (const f of results.filter(r => !r.ok)) console.log(`::error::order-loop smoke — ${f.label}${f.detail ? ` (${f.detail})` : ''}`);
+  console.log(`\n${failed} smoke check(s) FAILED\n\nserver log:\n${serverLog.slice(-2000)}`);
+} else console.log('\nAll order-loop smoke checks passed ✅');
 
 server.kill('SIGTERM');
 await fake.stop();
