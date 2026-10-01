@@ -30,6 +30,7 @@ import { evaluateCharge, expectedAmountMinor, cancelSubscriptionPlan, reactivate
 import { newOAuthState, hashState, newPkcePair, stateDecision, sanitizeProviderError, buildAuthorizeUrl, OAUTH_STATE_TTL_MS } from './src/utils/oauth.js';
 import { ACCESS_TOKEN_TTL, ACCESS_TOKEN_TTL_SEC, hashToken, newFamilyId, newSessionRow, legacySessionRow, isSessionReuse, isSessionActive, isMissingColumnError, REUSE_REASON } from './src/utils/session.js';
 import { AUTH_ACCESS_COOKIE, AUTH_REFRESH_COOKIE, parseCookies, isMutating, csrfMatches, setAuthCookies, clearAuthCookies } from './src/utils/cookies.js';
+import { METRICS, quotaGuard, consumeQuota, quotaExceededBody, usageSnapshot, metricForContentType, periodStart } from './src/utils/quota.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -446,6 +447,13 @@ async function getUserSubscription(userId) {
   subscriptionCache.set(userId, result);
   return result;
 }
+
+// Phase 7.3 (B-06): quota middleware bound to this module's client + plan lookup.
+const quotaGuardFor = (metric, amount) => quotaGuard(metric, {
+  supabase,
+  getLimits: async (userId) => (await getUserSubscription(userId)).limits,
+  amount,
+});
 function invalidateSubscriptionCache(userId) { if (userId) subscriptionCache.del(userId); }
 
 // ─── EMAIL (BREVO) ───────────────────────────────────────────────
@@ -2317,6 +2325,9 @@ app.post('/whatsapp/broadcasts', authenticate, async (req, res) => {
     if (!allowedSegments.has(target_segment)) return res.status(400).json({ success:false, error:'Invalid target_segment.' });
     const { limits } = await getUserSubscription(req.user.id);
     if (limits.whatsapp_broadcasts === 0) return res.status(403).json({ success:false, error:'Broadcasts require Creator plan or above.' });
+    // B-06: broadcasts are metered monthly too (they were gated by plan only).
+    const broadcastQuota = await consumeQuota(supabase, { userId:req.user.id, metric:METRICS.BROADCAST, amount:1, limit:limits.whatsapp_broadcasts });
+    if (!broadcastQuota.allowed) return res.status(403).json(quotaExceededBody(METRICS.BROADCAST, broadcastQuota));
     try {
       const since = new Date(new Date().setHours(0,0,0,0)).toISOString();
       const { count: todayCount } = await supabase.from('broadcasts').select('id',{count:'exact',head:true}).eq('user_id', req.user.id).gte('created_at', since);
@@ -2541,9 +2552,14 @@ app.post('/webhook/whatsapp', webhookLimiter, async (req, res) => {
       return;
     }
 
-    // Check reply limit
+    // Check reply limit — B-06: atomic monthly counter (usage_counters) instead of
+    // trusting the lifetime mirror. The mirror below still feeds the analytics view.
     const { limits } = await getUserSubscription(businessUserId);
-    if ((businessSettings.reply_count||0) >= limits.whatsapp_replies) return;
+    const replyQuota = await consumeQuota(supabase, { userId:businessUserId, metric:METRICS.REPLY, amount:1, limit:limits.whatsapp_replies });
+    if (!replyQuota.allowed) {
+      console.log(JSON.stringify({ level:'warn', msg:'wa reply quota reached — inbound stored only', userId:businessUserId, used:replyQuota.used, limit:limits.whatsapp_replies }));
+      return;
+    }
 
     // Explicit send channel (S-06/W-07): tenant's own number, or the platform's
     // shared number for shared-mode tenants. Never an implicit fallback.
@@ -2723,7 +2739,7 @@ app.patch('/social/accounts/:id', authenticate, async (req, res) => {
 });
 
 // POST /content/generate/text
-app.post('/content/generate/text', authenticate, contentLimiter, async (req, res) => {
+app.post('/content/generate/text', authenticate, contentLimiter, quotaGuardFor(METRICS.TEXT), async (req, res) => {
   try {
     const { topic, platform='instagram', tone='professional', language='en', product_id } = req.body;
     if (!topic) return res.status(400).json({ success:false, error:'Topic is required.' });
@@ -2737,7 +2753,7 @@ app.post('/content/generate/text', authenticate, contentLimiter, async (req, res
 });
 
 // POST /content/generate/image
-app.post('/content/generate/image', authenticate, contentLimiter, async (req, res) => {
+app.post('/content/generate/image', authenticate, contentLimiter, quotaGuardFor(METRICS.IMAGE), async (req, res) => {
   try {
     const { topic, platform='instagram', tone='professional', language='en', aspect_ratio='1:1', style='photorealistic', product_id } = req.body;
     if (!topic) return res.status(400).json({ success:false, error:'Topic is required.' });
@@ -2754,7 +2770,7 @@ app.post('/content/generate/image', authenticate, contentLimiter, async (req, re
 });
 
 // POST /content/generate/video
-app.post('/content/generate/video', authenticate, contentLimiter, async (req, res) => {
+app.post('/content/generate/video', authenticate, contentLimiter, quotaGuardFor(METRICS.VIDEO), async (req, res) => {
   try {
     const { topic, platform='tiktok', tone='professional', language='en', duration=6, aspect_ratio='9:16', style='modern', product_id } = req.body;
     if (!topic) return res.status(400).json({ success:false, error:'Topic is required.' });
@@ -2782,7 +2798,7 @@ app.post('/content/generate/video', authenticate, contentLimiter, async (req, re
 });
 
 // POST /content/generate/carousel
-app.post('/content/generate/carousel', authenticate, contentLimiter, async (req, res) => {
+app.post('/content/generate/carousel', authenticate, contentLimiter, quotaGuardFor(METRICS.IMAGE, (req) => Math.min(Math.max(Number(req.body?.slides) || 5, 1), 10)), async (req, res) => {
   try {
     const { topic, platform='instagram', language='en', slides=5, product_id } = req.body;
     if (!topic) return res.status(400).json({ success:false, error:'Topic is required.' });
@@ -2811,6 +2827,13 @@ app.post('/content/regenerate/:id', authenticate, contentLimiter, async (req, re
   try {
     const { data:item } = await supabase.from('content_items').select('*').eq('id',req.params.id).eq('user_id',req.user.id).single();
     if (!item) return res.status(404).json({ success:false, error:'Content not found.' });
+    // B-06: a regeneration costs the same quota as a generation for that type.
+    const metric = metricForContentType(item.type);
+    if (metric) {
+      const { limits } = await getUserSubscription(req.user.id);
+      const q = await consumeQuota(supabase, { userId:req.user.id, metric, amount:1, limit:limits[metric] });
+      if (!q.allowed) return res.status(403).json(quotaExceededBody(metric, q));
+    }
     const { platform='instagram', tone='professional', language='en' } = req.body;
     const { data:bv } = await supabase.from('brand_voice').select('*').eq('user_id',req.user.id).single();
     const result = await generateCaptionSafe({ topic:item.topic, platform, tone, language, brandVoice:bv });
@@ -3281,7 +3304,9 @@ app.get('/subscription/current', authenticate, async (req, res) => {
       supabase.from('content_items').select('id',{ count:'exact', head:true }).eq('user_id',req.user.id).gte('created_at',monthStart),
       supabase.from('posts').select('id',{ count:'exact', head:true }).eq('user_id',req.user.id).eq('status','scheduled'),
     ]);
-    return res.json({ success:true, data:{ subscription, plan, limits, usage:{ whatsapp_replies:{ used:replies||0, limit:limits.whatsapp_replies }, contacts:{ used:contactsC||0, limit:limits.whatsapp_contacts }, products:{ used:products||0, limit:limits.products_limit }, content_generated:{ used:contentC||0, limit:limits.text_posts+limits.image_generations+limits.video_generations }, scheduled_posts:{ used:scheduled||0, limit:limits.scheduled_posts_limit } } } });
+    // B-06: expose the real monthly counters when migration 20261009 is applied.
+    const monthly = await usageSnapshot(supabase, { userId:req.user.id });
+    return res.json({ success:true, data:{ subscription, plan, limits, usage:{ whatsapp_replies:{ used:monthly?.whatsapp_replies ?? (replies||0), limit:limits.whatsapp_replies }, contacts:{ used:contactsC||0, limit:limits.whatsapp_contacts }, products:{ used:products||0, limit:limits.products_limit }, content_generated:{ used:contentC||0, limit:limits.text_posts+limits.image_generations+limits.video_generations }, scheduled_posts:{ used:scheduled||0, limit:limits.scheduled_posts_limit }, monthly:monthly||undefined } } });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch subscription.' }); }
 });
 
@@ -3917,12 +3942,45 @@ cron.schedule('*/5 * * * *', async () => {
   if (!executed) console.log('[CRON publish] skipped (locked)');
 });
 
-// Reset monthly WhatsApp reply counts — 1st of every month at midnight
+// Monthly maintenance — 1st of every month at midnight.
+// B-09: the old code called .update({reply_count:0}) with NO filter — an
+// unscoped write that Supabase silently refuses, so the counter grew forever
+// while analytics reported lifetime totals as "this month". Quotas are now
+// period-scoped (usage_counters), so there is nothing to reset: this job only
+// maintains the legacy display mirror (paged, explicit user_id filter) and
+// prunes counters older than 13 months.
 cron.schedule('0 0 1 * *', async () => {
-  try {
-    await supabase.from('business_settings').update({ reply_count:0, last_reply_reset:new Date().toISOString() });
-    console.log('[CRON] Monthly reply counts reset.');
-  } catch (err) { console.error('[CRON reset counts]', err.message); }
+  await withAdvisoryLock(supabase, 'cron:monthly-usage', async () => {
+    const nowIso = new Date().toISOString();
+    const PAGE   = 500;
+    let from = 0, updated = 0, pages = 0;
+    try {
+      while (pages < 40) {
+        const { data: rows, error } = await supabase.from('business_settings')
+          .select('user_id').not('user_id','is',null)
+          .order('user_id', { ascending:true }).range(from, from + PAGE - 1);
+        if (error) { console.warn('[CRON monthly] legacy mirror read failed:', error.message); break; }
+        if (!rows || !rows.length) break;
+        const ids = rows.map(r => r.user_id).filter(Boolean);
+        if (ids.length) {
+          const { error: upErr } = await supabase.from('business_settings')
+            .update({ reply_count:0, last_reply_reset:nowIso }).in('user_id', ids);
+          if (upErr) { console.warn('[CRON monthly] legacy mirror write failed:', upErr.message); break; }
+          updated += ids.length;
+        }
+        if (rows.length < PAGE) break;
+        from += PAGE; pages++;
+      }
+      console.log(JSON.stringify({ level:'info', msg:'monthly maintenance complete', legacyRowsReset:updated }));
+    } catch (err) { console.error('[CRON monthly]', err.message); }
+
+    try {
+      const { data: pruned, error } = await supabase.rpc('prune_usage_counters', { older_than_months:13 });
+      if (error) console.warn('[CRON monthly] counter prune skipped:', error.message);
+      else console.log(JSON.stringify({ level:'info', msg:'usage counters pruned', rows:pruned }));
+    } catch (err) { console.warn('[CRON monthly] counter prune skipped:', err.message); }
+  });
+  console.log('[CRON] monthly maintenance finished (lock released).');
 });
 
 // Expire subscriptions — daily at 2am (with lock)

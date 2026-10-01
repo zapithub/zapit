@@ -1,6 +1,6 @@
 # ZAPIT — Phase 0 Master Audit → Tracker (New Attachment)
 **Source:** `ZAPIT — Master Codebase Audit, Architecture Review & World-Class Upgrade Blueprint` (30 Sep 2026, Phase 0, no code modified) — pasted by user 2026-10-01  
-**Current codebase:** `arena/01a0f67b-zapit` after Phases 1–5 + **6.1–6.5 + 7.1–7.2** (47 findings → 0 Critical, plus new audit: S-01/S-02/S-05/S-06/S-07/S-13/S-15/S-16/S-22/W-07 + **W-14 (new)** all FIXED, `npm test` 12 suites + `security:check` 107/107 + live E2E)  
+**Current codebase:** `arena/01a0f67b-zapit` after Phases 1–5 + **6.1–6.5 + 7.1–7.3** (47 findings → 0 Critical, plus new audit: S-01/S-02/S-05/S-06/S-07/S-13/S-15/S-16/S-22/W-07 + **W-14 (new)** all FIXED, `npm test` 13 suites + `security:check` 116/116 + live E2E)  
 **Rule:** Do in phases, report Done vs Pending, no shortcut, finish stage before next. This file is the single source of truth for the **NEW** audit.
 
 > **Evidence labels per §0.1:** FACT/OBSERVATION/RISK/RECOMMENDATION as in Phase 0. Priorities P0/P1/P2/P3 as in §12.
@@ -54,8 +54,8 @@ Our prior `CONSULTANT_REVIEW.md` (47 findings) covered security, architecture, f
 | **B-02** | `cancel` drops access immediately vs promise period-end | P1 | S | ✅ **FIXED 6.4** — `cancel` keeps `status='active'`, sets `cancel_at = expires_at` (access retained to period end) | ✅ 2026-10-01 |
 | **B-03** | No recurring billing/dunning | P1 | L | 🔴 OPEN — `auto_renew` flag no worker | Phase 9 |
 | **B-05** | Currency GBP/EUR → `price.USD` mis-pricing | P1 | M | 🔴 OPEN — `COUNTRY_CURRENCY` still GB→GBP, `price[GBP] ?? price.USD` → mislabel | Phase 7 |
-| **B-06** | Most quotas unenforced (text/image/video/contacts) | P1 | M | 🟡 PARTIAL — some enforced; need usage_counters + middleware | Phase 7 |
-| **B-09** | Monthly reset `update({reply_count:0})` **no filter** → no-op | P1 | S–M | 🔴 OPEN — `L2994` still unfiltered | Phase 7 |
+| **B-06** | Most quotas unenforced (text/image/video/contacts) | P1 | M | ✅ **FIXED 7.3** — `usage_counters` + atomic `consume_usage` RPC; text/image/video/carousel/regeneration/broadcast/reply paths metered; over-quota → `403 quota_exceeded`; graceful pre-migration fallback | **DONE 7.3** |
+| **B-09** | Monthly reset `update({reply_count:0})` **no filter** → no-op | P1 | S–M | ✅ **FIXED 7.3** — quotas are period-scoped (no reset needed); the legacy mirror resets via a paged, explicitly filtered `.in('user_id', ids)` under an advisory lock, and stale counters are pruned | **DONE 7.3** |
 | **W-01** | **No order/payment creation at all** | P1 | XL | 🔴 OPEN — `generateOrderNumber` unused, tenant `paystack_secret_key` never read | **Phase 8 (core loop)** |
 | **W-02** | Welcome stale-state (msg 1 & 2 both only welcome) | P1 | M | 🔴 OPEN | Phase 8 |
 | **W-03** | Broadcast free-text outside 24h → fails; scheduled never runs | P1 | L | 🔴 OPEN — scheduled insert no cron | Phase 8 |
@@ -87,6 +87,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 | **6.5** | **P0/P1 — Data Leak & Injection Hardening** | S-22, S-16, S-03 follow-up, S-15 OTP, S-13 XFF | P0/P1 | M | ✅ **DONE 2026-10-01** — `pickFields` allow-lists, `crypto.randomInt` + lockout, `req.ip` for location, login DTO; migration `20261006`; 9 suites, 84/84 checks |
 | **7.1** | **P1 — Social OAuth State & PKCE** | S-07 | P1 | S | ✅ **DONE 2026-10-01** — `oauth_states` (hashed, single-use, 10-min TTL, user/platform/redirect-bound), identity from the DB row, PKCE S256 on every provider, sanitised provider errors; migration `20261007`; 10 suites, 95/95 checks |
 | **7.2** | **P1 — Auth Tokens & Browser Session** | S-08, S-09 | P1 | M | ✅ **DONE 2026-10-01** — 15-min access tokens, hashed `sessions` with rotation + family revocation on reuse, httpOnly cookie path with double-submit CSRF, no `?token=` in URLs; migration `20261008`; 12 suites, 107/107 checks |
+| **7.3** | **P1 — Quotas & Monthly Accounting** | B-06, B-09 | P1 | M | ✅ **DONE 2026-10-01** — period-scoped `usage_counters` + atomic `consume_usage`; every advertised quota enforced (generation, carousel per slide, regeneration, broadcasts, replies); filtered legacy reset + prune; migration `20261009`; 13 suites, 116/116 checks |
 | **7** | **P1 — Auth, Quotas, Money Correctness** | S-07, S-08, S-09, S-14, B-05, B-06, B-09, D-05, S-15/16/17, S-12 follow-up | P1 | L | OAuth nonce+PKCE, JWT 15m + hashed refresh, httpOnly cookie path documented, Paystack amount matrix, usage_counters + middleware, reset cron filtered, analytics `count` not truncated |
 | **8** | **P1 — Core Loop: Orders & Payments in Chat** | W-01, W-02, W-03 (templates), W-04 (dedup), W-07 done, N-1/N-2 | P1 | XL | Customer can type quantity/address → order row + `generateOrderNumber` + Paystack link/bank ref → webhook marks `paid` → confirmation; welcome bug fixed; STOP handled; human takeover flag |
 | **9** | **P1 — Rebuild Social Publishing** | C-01–C-08, P1 | L | Rebuild publishing layer in worker: correct Page/IG ids, long-lived token exchange, refresh job, YouTube multipart, lease-based scheduler (no 5-min window) |
@@ -104,7 +105,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 
 **PENDING (must still do, in order):**
 - **Phase 6.5 DONE:** S-13, S-15, S-16, S-22 — **all P0 + 6.5 P1s closed** (S-06 in 6.3, B-01/B-02/B-04/B-07 in 6.4, S-05 in 6.2, S-01/S-22/W-07 in 6.1)
-- **Phase 7.3–7.6:** B-06/B-09 (usage_counters + filtered reset), B-05 (Paystack amount matrix + country→currency honesty), D-05 (analytics truncation) — S-07 closed in 7.1, S-08/S-09 closed in 7.2; S-14 closed in 6.4; S-13/S-15/S-16 closed in 6.5
+- **Phase 7.4–7.5:** B-05 (Paystack amount matrix + country→currency honesty), D-05 (analytics truncation) — S-07 closed in 7.1, S-08/S-09 in 7.2, B-06/B-09 in 7.3; S-14 closed in 6.4; S-13/S-15/S-16 closed in 6.5
 - **Phase 8:** W-01 core loop (largest), W-02–W-04, N-1/N-2
 - **Phase 9:** C-01–C-08 rebuild
 - **Phase 10:** U-01–U-18, NDPA
@@ -241,3 +242,17 @@ entirely requires the Phase 7 auth rework (soft-accept + owner notification + CA
 **Residual (deliberate):** until `20261008` is applied, sessions keep using the legacy raw columns (the API logs a warning on each login) — apply the migration with the deploy. The registration email-existence oracle is still open by design (tracked under Phase 7 auth rework: soft-accept + owner notification + CAPTCHA).
 
 **DONE 7.2:** S-08, S-09. **Pending in Phase 7:** 7.3 B-06/B-09 (quotas + filtered monthly reset), 7.4 B-05 (amount matrix), 7.5 D-05 (analytics truncation) → 8 (core loop) → 9 (social) → 10 (UX/NDPA).
+
+
+## 5f. Phase 7.3 — Exit criteria & evidence (DONE 2026-10-01)
+
+**Deliverables:** `src/utils/quota.js` (period keys, metric mapping, pure arithmetic, atomic consume + fallback, snapshot, middleware), `index.js` (4 generation guards, regeneration by item type, broadcast + reply consumption, `usage.monthly`, filtered monthly job), `supabase/migrations/20261009_phase7_03_usage_counters.sql`, `tests/unit/quota.test.mjs`, `scripts/security-check.mjs` 107 → 116, `docs/API.md`.
+
+**Exit criteria (tracker L88, B-06/B-09 slices):**
+- `usage_counters` + middleware — **PASS ✅** (`quotaGuard` consumes through the atomic `consume_usage`; a single SQL statement refuses the last slot)
+- quotas enforced on text/image/video/broadcast/reply paths — **PASS ✅** (carousel metered per slide, regeneration metered by item type, broadcasts and inbound auto-replies metered)
+- reset cron filtered / unnecessary — **PASS ✅** (new month = new `period_start`; the legacy mirror resets with an explicit paged filter under an advisory lock)
+- graceful pre-migration behaviour — **PASS ✅** (degraded fallback, fail-open only when the table is absent, never a 500)
+- `npm test` (13 suites) + `npm run security:check` (116/116) + `node --check` green — **PASS ✅ (2026-10-01)**
+
+**DONE 7.3:** B-06, B-09. **Pending in Phase 7:** 7.4 B-05 (Paystack amount matrix + country→currency honesty), 7.5 D-05 (analytics truncation) → 8 (core loop) → 9 (social) → 10 (UX/NDPA).

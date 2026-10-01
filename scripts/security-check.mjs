@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ZAPIT — Security smoke check for CI (Phases 1–7.2)
+// ZAPIT — Security smoke check for CI (Phases 1–7.3)
 // Fails (exit 1) if any critical invariant is violated.
 // No external deps, runs on Node 18+.
 
@@ -381,6 +381,38 @@ try {
   else pass('Browser hosts use the URL-free cookie path with CSRF (S-09)');
 } catch { fail('frontend files missing for S-09 checks'); }
 
+// ── Phase 7.3 — every advertised quota is enforced (B-06/B-09) ──
+try {
+  const idx = fs.readFileSync('index.js','utf8');
+  const guards = ['quotaGuardFor(METRICS.TEXT)','quotaGuardFor(METRICS.IMAGE)','quotaGuardFor(METRICS.VIDEO)','quotaGuardFor(METRICS.IMAGE, (req) =>'];
+  for (const g of guards) if (!idx.includes(g)) fail(`generation route is not metered: ${g} (B-06)`);
+  if (guards.every(g => idx.includes(g))) pass('Text/image/video/carousel generations are metered (B-06)');
+  if (!idx.includes('metricForContentType(item.type)')) fail('regeneration bypasses the quota (B-06)');
+  else pass('Regeneration consumes the item-type quota (B-06)');
+  if (!idx.includes('metric:METRICS.BROADCAST')) fail('broadcasts are not metered (B-06)');
+  else pass('Broadcasts are metered monthly (B-06)');
+  if (!idx.includes('metric:METRICS.REPLY')) fail('WhatsApp replies are not metered (B-06)');
+  else pass('WhatsApp replies are metered monthly (B-06)');
+  if (idx.includes("update({ reply_count:0, last_reply_reset:new Date().toISOString() })")) fail('the unfiltered monthly reset is back (B-09)');
+  else if (!idx.includes(".in('user_id', ids)")) fail('monthly legacy reset does not filter per user (B-09)');
+  else pass('Monthly reset is paged and filtered by user id (B-09)');
+  if (!idx.includes("prune_usage_counters")) fail('monthly job does not prune old counters (B-09)');
+  else pass('Monthly job prunes counters older than 13 months (B-09)');
+  if (!idx.includes('usageSnapshot(supabase')) fail('/subscription/current does not expose monthly usage (B-06)');
+  else pass('/subscription/current exposes monthly counters (B-06)');
+} catch { fail('index.js missing for quota checks'); }
+try {
+  const q = fs.readFileSync('src/utils/quota.js','utf8');
+  for (const fn of ['periodStart','metricForContentType','quotaDecision','consumeQuota','usageSnapshot','quotaGuard'])
+    if (!q.includes(`export function ${fn}`) && !q.includes(`export async function ${fn}`)) fail(`quota util lacks ${fn} (B-06)`);
+  if (!q.includes('p_user_id: userId')) fail('quota util does not call the atomic RPC (B-06)');
+  else pass('Quota util consumes counters through the atomic RPC (B-06)');
+  const mig = fs.readFileSync('supabase/migrations/20261009_phase7_03_usage_counters.sql','utf8');
+  if (!mig.includes('UNIQUE (user_id, metric, period_start)')) fail('Phase 7.3 migration lacks the per-period unique key');
+  else if (!mig.includes('consume_usage') || !mig.includes('WHERE usage_counters.used + v_add <= v_limit')) fail('Phase 7.3 migration lacks atomic consume');
+  else pass('Phase 7.3 migration present (period-scoped counters, atomic consume)');
+} catch { fail('quota util or migration missing (B-06)'); }
+
 // validation single-source + migration
 try {
   const v = fs.readFileSync('src/utils/validation.js','utf8');
@@ -395,8 +427,8 @@ try {
 
 console.log('');
 if (fails) {
-  console.error(`\n${fails} check(s) failed — Phase 7.2 hardening not done.`);
+  console.error(`\n${fails} check(s) failed — Phase 7.3 hardening not done.`);
   process.exit(1);
 } else {
-  console.log('All security checks passed (Phases 1–7.2). ✅');
+  console.log('All security checks passed (Phases 1–7.3). ✅');
 }

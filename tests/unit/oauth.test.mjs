@@ -23,7 +23,8 @@ console.log('▶ oauth.test (Phase 7.1 — S-07)');
   const st = newOAuthState();
   assert.ok(!/eyJ/.test(st), 'not a base64-encoded JSON blob');
   const decoded = Buffer.from(st, 'base64url').toString('utf8');
-  assert.ok(!decoded.includes('user_id') && !decoded.includes('{'), 'contains no structured payload');
+  // (a raw random byte could legally be '{' — assert on the payload, not the alphabet)
+  assert.ok(!decoded.includes('user_id') && !decoded.includes('platform'), 'contains no structured payload');
 }
 
 // ── hashState: sha256 hex, stable, one-way ───────────────────────

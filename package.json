@@ -15,7 +15,7 @@
     "test:phase1": "node scripts/security-check.mjs && node --input-type=module --check < index.js && echo 'Phase 1 smoke OK'",
     "generate:pricing": "node scripts/generate-pricing.mjs",
     "test:phase2": "node scripts/generate-pricing.mjs && node --input-type=module --check < index.js && node scripts/security-check.mjs && echo 'Phase 2 smoke OK'",
-    "test": "node tests/unit/validation.test.mjs && node tests/unit/plans.test.mjs && node tests/unit/cache.test.mjs && node tests/unit/crypto.test.mjs && node tests/unit/admin.test.mjs && node tests/unit/webhook.test.mjs && node tests/unit/tenantRouting.test.mjs && node tests/unit/billing.test.mjs && node tests/unit/oauth.test.mjs && node tests/unit/session.test.mjs && node tests/unit/cookies.test.mjs && node tests/unit/otp.test.mjs && echo 'All unit tests passed'",
+    "test": "node tests/unit/validation.test.mjs && node tests/unit/plans.test.mjs && node tests/unit/cache.test.mjs && node tests/unit/crypto.test.mjs && node tests/unit/admin.test.mjs && node tests/unit/webhook.test.mjs && node tests/unit/tenantRouting.test.mjs && node tests/unit/billing.test.mjs && node tests/unit/oauth.test.mjs && node tests/unit/session.test.mjs && node tests/unit/cookies.test.mjs && node tests/unit/quota.test.mjs && node tests/unit/otp.test.mjs && echo 'All unit tests passed'",
     "test:unit": "npm test",
     "test:integration": "node tests/integration/health.test.mjs && node tests/integration/webhook-auth.test.mjs",
     "test:all": "npm test && npm run test:integration"

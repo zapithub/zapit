@@ -116,6 +116,21 @@ Plans: `free`, `creator`, `growth`, `agency` (`src/config/plans.js`). Prices are
 Notes: the old base64 `{ user_id, platform, ts }` state is gone; a callback URL from another user's browser cannot attach accounts to that user. States are single-use (`used_at` set conditionally), so a replayed callback fails. Apply migration `20261007_phase7_01_oauth_state.sql`; `prune_oauth_states(1)` removes stale rows.
 
 
+## Plan quotas (Phase 7.3 — B-06)
+
+Metered per **UTC calendar month**, one counter row per `(user, metric, period)`, consumed atomically so concurrent requests cannot exceed a plan cap:
+
+| Metric | Endpoints | Plan key |
+|--------|-----------|----------|
+| `text_posts` | `POST /content/generate/text`, caption/text regeneration | `text_posts` |
+| `image_generations` | `POST /content/generate/image`, `POST /content/generate/carousel` (per slide), image regeneration | `image_generations` |
+| `video_generations` | `POST /content/generate/video`, video regeneration | `video_generations` |
+| `whatsapp_broadcasts` | `POST /whatsapp/broadcasts` | `whatsapp_broadcasts` |
+| `whatsapp_replies` | inbound WhatsApp messages that receive an auto-reply | `whatsapp_replies` |
+
+Exceeding a quota returns `403` with `{ success:false, code:'quota_exceeded', error, data:{ metric, used, limit } }`. `GET /subscription/current` returns `usage.monthly` with the live counters. A new month starts a **new period row**, so nothing is reset (this replaces the old, broken monthly-reset cron).
+
+
 ## Pagination
 
 List endpoints accept `?page=1&limit=20` (max 100). Response includes `meta: { total, page, limit }` or `pagination`.

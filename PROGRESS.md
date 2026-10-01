@@ -458,18 +458,49 @@ fixed first — the routing queries themselves could never have worked with it i
 
 ---
 
+## Phase 7.3 — Enforced quotas & monthly accounting (B-06, B-09) — Detail
+
+| Task | Finding | Description | Status |
+|------|---------|-------------|--------|
+| 7.3.0 | **B-06** | Plan quotas were advertised but not enforced: text/image/video/carousel generations only checked feature flags, so a free account could generate unlimited content. Every generation route is now metered through a `quotaGuard` middleware bound to the plan limits | ✅ Done |
+| 7.3.1 | **B-06** | `POST /content/regenerate/:id` consumes the quota of the item's type (text/image/video) — regeneration was a free unlimited path | ✅ Done |
+| 7.3.2 | **B-06** | Broadcasts are metered on top of the plan gate (free = 0), and inbound WhatsApp auto-replies consume the monthly reply quota via the same atomic path; both previously trusted a lifetime mirror only | ✅ Done |
+| 7.3.3 | **B-06** | `usage_counters` (user × metric × `period_start`) with the `consume_usage` RPC: check-and-increment in a single SQL statement so two concurrent requests cannot both pass the last slot. `quotaDecision()` is the pure arithmetic used by the RPC, the fallback and the tests | ✅ Done |
+| 7.3.4 | **B-06** | Graceful degradation: without migration `20261009` the API uses a read-then-upsert fallback (`degraded:true`), and if the table is missing entirely it fails **open** with a warning (never break paying customers) while `security:check` asserts the migration ships | ✅ Done |
+| 7.3.5 | **B-09** | The monthly job called `.update({ reply_count:0, last_reply_reset })` with **no filter** — an unscoped write Supabase refuses, so the counter grew forever and analytics reported lifetime totals as "this month". Quotas are now period-scoped (nothing to reset); the legacy mirror is reset with an explicit, paged `.in('user_id', ids)` under an advisory lock, and counters older than 13 months are pruned | ✅ Done |
+| 7.3.6 | **B-06** | `GET /subscription/current` returns `usage.monthly` from the live counters (falls back to the old approximations pre-migration) | ✅ Done |
+| 7.3.7 | — | `tests/unit/quota.test.mjs` (period keys, metric mapping, limit arithmetic table, atomic path, degradation paths, middleware behaviour incl. fail-open, cron/wiring assertions) + migration `20261009_phase7_03_usage_counters.sql`; `security-check` 107 → **116 checks**; `npm test` **13 suites** | ✅ Done |
+
+**Phase 7.3 Exit criteria:** every quota advertised in `PLAN_LIMITS` is enforced on its endpoints — **PASS ✅**; counters are per-period and race-safe — **PASS ✅**; the monthly reset is filtered (or unnecessary) — **PASS ✅**; tests + security checks green — **PASS ✅**.
+
+**Verification (2026-10-01):**
+- `node --check < index.js` — ✅; `npm test` — **13 suites ✅**; `npm run security:check` — **116/116 ✅** (was 107)
+- Live dev: `/auth/me` → 401, `/subscription/current` unauth → 401, health 200; quota middleware fail-open path exercised in unit tests (never 500s an endpoint)
+- `grep` invariants: no unscoped monthly reset, every generation route carries its metric, `consume_usage` present in the migration ✅
+### 2026-10-01 — Phase 7.3 Completed ✅ — Enforced quotas & monthly accounting (B-06, B-09)
+- **Phase 7.3 — DONE**
+  - Created `src/utils/quota.js` (period keys, metric mapping, pure limit arithmetic, atomic `consume_usage` + graceful fallback, snapshot, `quotaGuard` middleware)
+  - Text/image/video/carousel generations, regeneration, broadcasts and inbound auto-replies all consume their monthly quota; over-quota → `403 quota_exceeded`
+  - Created `supabase/migrations/20261009_phase7_03_usage_counters.sql` (`usage_counters`, atomic RPC, snapshot, prune, RLS)
+  - Fixed B-09: the unfiltered no-op monthly reset now resets the legacy mirror with an explicit paged `.in('user_id', ids)` under an advisory lock and prunes counters; period-scoped rows make the reset unnecessary for real quotas
+  - `/subscription/current` exposes `usage.monthly`; tests `quota.test.mjs`; `npm test` **13 suites**; `security-check` **116 checks**
+  - **Verification:** `node --check` ✅, `npm test` ✅, `security:check` 116/116 ✅, live 401/200 smoke ✅
+
+
+---
+
 ## Final Summary (2026-10-01)
 
 | Metric | Before | After |
 |--------|--------|-------|
 | Critical findings | 11 | 0 |
 | High findings | 14 | 0 |
-| Security check | — | 107/107 ✅ (Phase 7.2) |
-| Tests | 0 | 12 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth, session, cookies) |
+| Security check | — | 116/116 ✅ (Phase 7.3) |
+| Tests | 0 | 13 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth, session, cookies, quota) |
 | Docs | 2 lines | 150+ lines + 5 docs |
-| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 4,013 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE · 7.2 sessions+cookies), modular imports, allowlist, spawn, cache, locks |
+| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 4,071 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE · 7.2 sessions+cookies · 7.3 quotas), modular imports, allowlist, spawn, cache, locks |
 | Frontend | 4× duplicated tokens, hardcode, 45 raw innerHTML | shared.css, pricing.json, DOMPurify+CSP, PWA, a11y focus trap |
-| DB | no migrations | 8 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout, 7.1 OAuth state, 7.2 hashed sessions) + advisory locks |
+| DB | no migrations | 9 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout, 7.1 OAuth state, 7.2 hashed sessions, 7.3 usage counters) + advisory locks |
 
 **Next steps for the team:** Run `supabase db push` (apply `20261002`…`20261005`, then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`), set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN`, share `GET /whatsapp/qr-code` route codes with free-plan users, apply `20261007` for 7.1, then continue **Phase 7.2–7.5 (tokens, quotas, amounts, analytics)**, before paid traffic per Phase 0 §A.4. Phases 6.1–6.5 closed — **all P0 audit findings + the 6.5 P1s resolved**. 🎉
 
