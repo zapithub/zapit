@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Phase 1 — Security smoke check for CI
+// ZAPIT — Security smoke check for CI (Phases 1–6.1)
 // Fails (exit 1) if any critical invariant is violated.
 // No external deps, runs on Node 18+.
 
@@ -79,10 +79,61 @@ else pass('trust proxy set');
 if (!pkg.scripts['security:check']) fail('package.json security:check missing');
 else pass('package.json security:check present');
 
+// ── 13. Phase 6.1 — Reserved usernames (S-01) ───────────────────────
+if (!indexJs.includes('RESERVED_USERNAMES') || !indexJs.includes('isReservedUsername')) fail('RESERVED_USERNAMES / isReservedUsername missing (S-01)');
+else pass('Reserved usernames guard present (S-01)');
+if (!indexJs.includes("This username is reserved")) fail('Reserved username error message missing');
+else pass('Reserved username rejection message present');
+if (indexJs.includes("adminList.includes(req.user.username)") && !indexJs.includes("dbUser?.role === 'admin'")) fail('requireAdmin still uses username check without DB role (S-01)');
+else pass('requireAdmin uses DB role (S-01)');
+
+// ── 14. Phase 6.1 — Admin secret timingSafeEqual (S-02) ─────────────
+if (!indexJs.includes('hasValidAdminSecret') || !indexJs.includes('safeEqual')) fail('hasValidAdminSecret / safeEqual missing (S-02)');
+else pass('Admin secret timingSafeEqual present (S-02)');
+if (indexJs.includes("ADMIN_SECRET && req.headers['x-admin-secret'] === ADMIN_SECRET")) fail('Old ADMIN_SECRET direct compare still present (S-02)');
+else pass('Old ADMIN_SECRET compare removed');
+
+// ── 15. Phase 6.1 — S-22 password_hash leak (explicit SAFE_USER_SELECT) ─
+if (!indexJs.includes('SAFE_USER_SELECT')) fail('SAFE_USER_SELECT missing (S-22)');
+else pass('SAFE_USER_SELECT present (S-22)');
+if (indexJs.includes("supabase.from('users').select('*').eq('id',req.params.id).single()")) fail("admin/users/:id still uses select('*') (S-22)");
+else pass("admin/users/:id does not use select('*')");
+if (indexJs.includes("supabase.from('users').update(updates).eq('id', req.user.id).select().single()")) fail("update-profile still uses select() without allow-list (S-22)");
+else pass('update-profile uses explicit select');
+
+// ── 16. Phase 6.1 — W-07 no platform fallback ───────────────────────
+if (indexJs.includes("accessToken || WA_ACCESS_TOKEN") && indexJs.includes("async function sendWAMessage")) {
+  // Check if the fallback is inside sendWAMessage itself
+  const waHelper = indexJs.slice(indexJs.indexOf('async function sendWAMessage'), indexJs.indexOf('async function sendWAMessage') + 1200);
+  if (waHelper.includes('accessToken || WA_ACCESS_TOKEN') || waHelper.includes('phoneNumberId || WA_PHONE_NUMBER_ID')) fail('sendWAMessage still falls back to platform tokens (W-07)');
+  else pass('sendWAMessage does not fall back (W-07 helper ok)');
+} else {
+  if (!indexJs.includes("Missing tenant WhatsApp credentials")) fail('W-07 throw message missing');
+  else pass('W-07 strict tenant check present');
+}
+// Ensure no fallback in webhook/broadcast/reply call sites (except shared assignment and admin explicit)
+const fallbackCount = (indexJs.match(/wa_phone_number_id\|\|WA_PHONE_NUMBER_ID/g) || []).length;
+if (fallbackCount > 0) fail(`Found ${fallbackCount} wa_phone_number_id||WA_PHONE_NUMBER_ID fallback(s) in call sites (W-07) — should be 0 besides shared assignment`);
+else pass('No wa_phone_number_id fallback in call sites (W-07)');
+const decryptFallback = (indexJs.match(/decrypt\(.*\)\s*:\s*WA_ACCESS_TOKEN/g) || []).length;
+if (decryptFallback > 0) fail(`Found ${decryptFallback} decrypt fallback(s) to WA_ACCESS_TOKEN (W-07)`);
+else pass('No decrypt fallback to WA_ACCESS_TOKEN (W-07)');
+
+// ── 17. Migration for role ────────────────────────────────────────
+try {
+  const mig = fs.readFileSync('supabase/migrations/20261002_phase6_01_admin_hardening.sql','utf8');
+  if (!mig.includes('role text') || !mig.includes("users_safe")) fail('Phase 6.1 migration missing role / users_safe view');
+  else pass('Phase 6.1 migration present');
+} catch { fail('Phase 6.1 migration file missing'); }
+
+// ── 18. OTP via fetch? (existing) ─────────────────────────────────
+if (!indexJs.includes('generateOTP') || !indexJs.includes('hashOTP')) fail('OTP helpers missing');
+else pass('OTP helpers present');
+
 console.log('');
 if (fails) {
-  console.error(`\n${fails} check(s) failed — Phase 1 not done.`);
+  console.error(`\n${fails} check(s) failed — Phase 6.1 not done.`);
   process.exit(1);
 } else {
-  console.log('All Phase 1 security checks passed. ✅');
+  console.log('All security checks passed (Phases 1–6.1). ✅');
 }

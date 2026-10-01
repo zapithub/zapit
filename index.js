@@ -57,9 +57,39 @@ const {
   BREVO_SENDER_EMAIL  = 'zapithub@gmail.com',
   ADMIN_SECRET,
   ADMIN_USERNAMES     = 'admin',
+  ADMIN_SEED_EMAIL,
   UNSPLASH_ACCESS_KEY,
   ENCRYPTION_KEY,
 } = process.env;
+
+// ─── RESERVED USERNAMES (Phase 6.1 — S-01) ───────────────────────
+const RESERVED_USERNAMES = new Set([
+  'admin','root','support','zapit','api','system','moderator','owner','superuser',
+  'help','info','contact','service','zapithub','zapit_admin','administrator',
+  'security','billing','abuse','postmaster','webmaster',
+]);
+function isReservedUsername(uname) {
+  if (!uname || typeof uname !== 'string') return false;
+  const lower = uname.toLowerCase().trim();
+  if (RESERVED_USERNAMES.has(lower)) return true;
+  const adminList = ADMIN_USERNAMES.split(',').map(u => u.trim().toLowerCase()).filter(Boolean);
+  if (adminList.includes(lower)) return true;
+  return false;
+}
+function safeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  try { return crypto.timingSafeEqual(bufA, bufB); } catch { return false; }
+}
+function hasValidAdminSecret(headerVal) {
+  if (!ADMIN_SECRET) return false;
+  if (!headerVal || typeof headerVal !== 'string') return false;
+  return safeEqual(String(headerVal), String(ADMIN_SECRET));
+}
+const SAFE_USER_SELECT = 'id,email,username,full_name,avatar_url,country_code,currency,timezone,language,phone,whatsapp_number,email_verified,phone_verified,referral_code,role,is_active,is_suspended,suspension_reason,created_at,last_login';
+const SAFE_USER_SELECT_PUBLIC = 'id,email,username,full_name,avatar_url,country_code,currency,email_verified,role,is_active,is_suspended,created_at,last_login';
 
 // ─── STARTUP ENV VALIDATION (Phase 1 — fail-closed) ─────────────
 const __IS_PROD = NODE_ENV === 'production';
@@ -329,17 +359,21 @@ async function authenticate(req, res, next) {
 
 // ─── MIDDLEWARE: ADMIN ───────────────────────────────────────────
 async function requireAdmin(req, res, next) {
-  // Rate limit admin attempts per IP
-  // (globalLimiter already, but add header audit)
-  const adminList = ADMIN_USERNAMES.split(',').map(u => u.trim());
-  const hasValidSecret = ADMIN_SECRET && req.headers['x-admin-secret'] === ADMIN_SECRET;
-  const isAdminUser = req.user && adminList.includes(req.user.username);
-  if (hasValidSecret || isAdminUser) {
-    // Audit log
-    console.log(JSON.stringify({ level:'info', reqId:req.id, adminAction: `${req.method} ${req.path}`, userId: req.user?.id || 'secret', ip:req.ip }));
+  // Phase 6.1 — harden: timingSafeEqual + DB role (not username) — fixes S-01/S-02
+  if (hasValidAdminSecret(req.headers['x-admin-secret'])) {
+    console.log(JSON.stringify({ level:'info', reqId:req.id, adminAction: `${req.method} ${req.path}`, userId: req.user?.id || 'secret', ip:req.ip, via:'secret' }));
     return next();
   }
-  console.warn(JSON.stringify({ level:'warn', reqId:req.id, msg:'admin denied', ip:req.ip, path:req.path }));
+  try {
+    const { data: dbUser, error } = await supabase.from('users').select('role').eq('id', req.user?.id).single();
+    if (!error && dbUser?.role === 'admin') {
+      console.log(JSON.stringify({ level:'info', reqId:req.id, adminAction: `${req.method} ${req.path}`, userId: req.user.id, ip:req.ip, via:'role' }));
+      return next();
+    }
+  } catch (e) {
+    console.warn(JSON.stringify({ level:'warn', reqId:req.id, msg:'admin role check failed', err: e.message }));
+  }
+  console.warn(JSON.stringify({ level:'warn', reqId:req.id, msg:'admin denied', ip:req.ip, path:req.path, userId: req.user?.id }));
   return res.status(403).json({ success: false, error: 'Admin access required.' });
 }
 
@@ -488,12 +522,17 @@ function verifyPaystackSig(rawBody, sig) {
 }
 
 // ─── WHATSAPP HELPERS ───────────────────────────────────────────
+// Phase 6.1 — W-07: never silently fall back to platform tokens when tenant creds are null
 async function sendWAMessage({ phoneNumberId, accessToken, to, message }) {
-  const token   = accessToken || WA_ACCESS_TOKEN;
-  const numberId = phoneNumberId || WA_PHONE_NUMBER_ID;
+  if (!to || !message) throw new Error('sendWAMessage: to and message are required');
+  const token = accessToken;
+  const numberId = phoneNumberId;
   if (!token || !numberId) {
-    console.log(`[WA MOCK] To:${to} | ${message?.substring(0, 80)}`);
-    return { success: true, mock: true };
+    if (!WA_ACCESS_TOKEN || !WA_PHONE_NUMBER_ID) {
+      console.log(`[WA MOCK] To:${to} | ${String(message).substring(0, 80)}`);
+      return { success: true, mock: true, reason: 'no credentials — mock' };
+    }
+    throw new Error('Missing tenant WhatsApp credentials — configure your dedicated number in Settings → WhatsApp (individual mode).');
   }
   try {
     const res = await fetch(`https://graph.facebook.com/v19.0/${numberId}/messages`, {
@@ -510,8 +549,8 @@ async function sendWAMessage({ phoneNumberId, accessToken, to, message }) {
 }
 
 async function markWARead(messageId, phoneNumberId, accessToken) {
-  const token   = accessToken || WA_ACCESS_TOKEN;
-  const numberId = phoneNumberId || WA_PHONE_NUMBER_ID;
+  const token = accessToken;
+  const numberId = phoneNumberId;
   if (!token || !numberId) return;
   await fetch(`https://graph.facebook.com/v19.0/${numberId}/messages`, {
     method: 'POST',
@@ -1112,6 +1151,8 @@ app.post('/auth/register', authLimiter, async (req, res) => {
     if (pwdErr) return res.status(400).json({ success:false, error: pwdErr });
     if (!/^[a-zA-Z0-9_]{3,30}$/.test(username))
       return res.status(400).json({ success:false, error:'Username must be 3-30 characters: letters, numbers, underscores only.' });
+    if (isReservedUsername(username))
+      return res.status(400).json({ success:false, error:'This username is reserved. Please choose another.' });
 
     const { data: existEmail } = await supabase.from('users').select('id').eq('email', email.toLowerCase()).single();
     if (existEmail) return res.status(409).json({ success:false, error:'An account with this email already exists.' });
@@ -1336,13 +1377,13 @@ app.get('/auth/me', authenticate, async (req, res) => {
   }
 });
 
-// PATCH /auth/update-profile
+// PATCH /auth/update-profile — Phase 6.1 S-22: explicit select (no password_hash)
 app.patch('/auth/update-profile', authenticate, async (req, res) => {
   try {
     const allowed = ['full_name','phone','whatsapp_number','timezone','language','avatar_url'];
     const updates = { updated_at:new Date().toISOString() };
     allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
-    const { data, error } = await supabase.from('users').update(updates).eq('id', req.user.id).select().single();
+    const { data, error } = await supabase.from('users').update(updates).eq('id', req.user.id).select(SAFE_USER_SELECT_PUBLIC).single();
     if (error) throw error;
     return res.json({ success:true, data:{ user:data }, message:'Profile updated!' });
   } catch {
@@ -1563,18 +1604,26 @@ app.patch('/whatsapp/settings', authenticate, async (req, res) => {
   } catch { return res.status(500).json({ success:false, error:'Failed to update settings.' }); }
 });
 
-// POST /whatsapp/test-connection
+// POST /whatsapp/test-connection — Phase 6.1 W-07: strict tenant creds (no platform fallback)
 app.post('/whatsapp/test-connection', authenticate, async (req, res) => {
   try {
     const { data:settings } = await supabase.from('business_settings').select('*').eq('user_id', req.user.id).single();
     const { data:user }     = await supabase.from('users').select('whatsapp_number,phone').eq('id', req.user.id).single();
     const to = req.body.phone || user?.whatsapp_number || user?.phone;
     if (!to) return res.status(400).json({ success:false, error:'Please provide a phone number to test.' });
-    const result = await sendWAMessage({ phoneNumberId:settings?.wa_phone_number_id||WA_PHONE_NUMBER_ID, accessToken:settings?.wa_access_token?decrypt(settings.wa_access_token):WA_ACCESS_TOKEN, to, message:`✅ WhatsApp connection test successful!\n\nYour ZAPIT bot for *${settings?.business_name||'your business'}* is live! 🚀` });
+    if (!settings?.wa_phone_number_id || !settings?.wa_access_token) {
+      return res.status(400).json({ success:false, error:'Missing tenant WhatsApp credentials — configure your dedicated number in Settings → WhatsApp (individual mode).' });
+    }
+    const decrypted = decrypt(settings.wa_access_token);
+    if (!decrypted) return res.status(400).json({ success:false, error:'Failed to decrypt WhatsApp token — re-save your credentials.' });
+    const result = await sendWAMessage({ phoneNumberId: settings.wa_phone_number_id, accessToken: decrypted, to, message:`✅ WhatsApp connection test successful!\n\nYour ZAPIT bot for *${settings?.business_name||'your business'}* is live! 🚀` });
     return result.success
       ? res.json({ success:true, message:'Test message sent! Check your WhatsApp.' })
       : res.status(400).json({ success:false, error:'Failed to send test message. Check your credentials.' });
-  } catch { return res.status(500).json({ success:false, error:'Connection test failed.' }); }
+  } catch (err) {
+    if (String(err.message).includes('Missing tenant')) return res.status(400).json({ success:false, error: err.message });
+    return res.status(500).json({ success:false, error:'Connection test failed.' });
+  }
 });
 
 // GET /whatsapp/qr-code
@@ -1939,7 +1988,12 @@ app.post('/whatsapp/broadcasts', authenticate, async (req, res) => {
     if (!scheduled_for) {
       let sentCount=0;
       for (const c of contacts) {
-        const r = await sendWAMessage({ phoneNumberId:settings?.wa_phone_number_id||WA_PHONE_NUMBER_ID, accessToken:settings?.wa_access_token?decrypt(settings.wa_access_token):WA_ACCESS_TOKEN, to:c.phone, message:message.replace('{name}',c.name||'there') });
+        let r;
+        try {
+          const tok = settings?.wa_access_token ? decrypt(settings.wa_access_token) : null;
+          if (!settings?.wa_phone_number_id || !tok) throw new Error('Missing tenant WhatsApp credentials');
+          r = await sendWAMessage({ phoneNumberId: settings.wa_phone_number_id, accessToken: tok, to:c.phone, message:message.replace('{name}',c.name||'there') });
+        } catch (e) { r = { success:false, error: e.message }; }
         if (r.success) sentCount++;
         await sleep(120); // ~8 msg/sec rate limit
       }
@@ -1992,7 +2046,14 @@ app.post('/whatsapp/conversations/:id/reply', authenticate, async (req, res) => 
     const { data:conv }     = await supabase.from('conversations').select('*,contacts(phone)').eq('id',req.params.id).eq('user_id',req.user.id).single();
     if (!conv) return res.status(404).json({ success:false, error:'Conversation not found.' });
     const { data:settings } = await supabase.from('business_settings').select('*').eq('user_id',req.user.id).single();
-    const result = await sendWAMessage({ phoneNumberId:settings?.wa_phone_number_id||WA_PHONE_NUMBER_ID, accessToken:settings?.wa_access_token?decrypt(settings.wa_access_token):WA_ACCESS_TOKEN, to:conv.contacts?.phone, message });
+    let result;
+    try {
+      const tok2 = settings?.wa_access_token ? decrypt(settings.wa_access_token) : null;
+      if (!settings?.wa_phone_number_id || !tok2) throw new Error('Missing tenant WhatsApp credentials');
+      result = await sendWAMessage({ phoneNumberId: settings.wa_phone_number_id, accessToken: tok2, to:conv.contacts?.phone, message });
+    } catch (e) {
+      return res.status(400).json({ success:false, error: e.message });
+    }
     if (result.success) {
       await supabase.from('messages').insert({ conversation_id:req.params.id, direction:'outbound', type:'text', content:message, status:'sent' });
       await supabase.from('conversations').update({ last_message_at:new Date().toISOString() }).eq('id',req.params.id);
@@ -2084,8 +2145,15 @@ app.post('/webhook/whatsapp', webhookLimiter, async (req, res) => {
 
     // Welcome message for first contact
     if ((contactRecord.message_count||0) <= 1 && businessSettings.welcome_message) {
-      await sendWAMessage({ phoneNumberId:businessSettings.wa_phone_number_id||WA_PHONE_NUMBER_ID, accessToken:businessSettings.wa_access_token?decrypt(businessSettings.wa_access_token):WA_ACCESS_TOKEN, to:from, message:businessSettings.welcome_message.replace('{name}',customerName) });
-      await markWARead(msgId, businessSettings.wa_phone_number_id||WA_PHONE_NUMBER_ID, businessSettings.wa_access_token?decrypt(businessSettings.wa_access_token):WA_ACCESS_TOKEN);
+      try {
+        const wTok = businessSettings.wa_access_token ? decrypt(businessSettings.wa_access_token) : null;
+        if (!businessSettings.wa_phone_number_id || !wTok) throw new Error('Missing tenant WA creds for welcome');
+        await sendWAMessage({ phoneNumberId: businessSettings.wa_phone_number_id, accessToken: wTok, to:from, message:businessSettings.welcome_message.replace('{name}',customerName) });
+      } catch (e) { console.warn('[WA welcome skip]', e.message); }
+      try {
+        const wTok2 = businessSettings.wa_access_token ? decrypt(businessSettings.wa_access_token) : null;
+        if (businessSettings.wa_phone_number_id && wTok2) await markWARead(msgId, businessSettings.wa_phone_number_id, wTok2);
+      } catch {}
       return;
     }
 
@@ -2093,10 +2161,17 @@ app.post('/webhook/whatsapp', webhookLimiter, async (req, res) => {
     const { response:aiReply } = await processWAMessage({ businessUserId, customerPhone:from, customerMessage:msgText, businessSettings, conversationId:conv?.id });
 
     // Send reply & log it
-    await sendWAMessage({ phoneNumberId:businessSettings.wa_phone_number_id||WA_PHONE_NUMBER_ID, accessToken:businessSettings.wa_access_token?decrypt(businessSettings.wa_access_token):WA_ACCESS_TOKEN, to:from, message:aiReply });
+    try {
+      const aTok = businessSettings.wa_access_token ? decrypt(businessSettings.wa_access_token) : null;
+      if (!businessSettings.wa_phone_number_id || !aTok) throw new Error('Missing tenant WA creds for AI reply');
+      await sendWAMessage({ phoneNumberId: businessSettings.wa_phone_number_id, accessToken: aTok, to:from, message:aiReply });
+    } catch (e) { console.warn('[WA AI reply skip]', e.message); }
     await supabase.from('messages').insert({ conversation_id:conv?.id, direction:'outbound', type:'text', content:aiReply, status:'sent', ai_processed:true }).catch(() => {});
     await supabase.from('business_settings').update({ reply_count:(businessSettings.reply_count||0)+1 }).eq('user_id',businessUserId).catch(() => {});
-    await markWARead(msgId, businessSettings.wa_phone_number_id||WA_PHONE_NUMBER_ID, businessSettings.wa_access_token?decrypt(businessSettings.wa_access_token):WA_ACCESS_TOKEN);
+    try {
+      const wTok3 = businessSettings.wa_access_token ? decrypt(businessSettings.wa_access_token) : null;
+      if (businessSettings.wa_phone_number_id && wTok3) await markWARead(msgId, businessSettings.wa_phone_number_id, wTok3);
+    } catch {}
 
   } catch (err) { console.error('[WA WEBHOOK ERROR]', err.message); }
 });
@@ -2989,11 +3064,11 @@ app.get('/admin/users', authenticate, adminLimiter, requireAdmin, async (req, re
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch users.' }); }
 });
 
-// GET /admin/users/:id
+// GET /admin/users/:id — Phase 6.1 S-22: explicit DTO (never password_hash/otp)
 app.get('/admin/users/:id', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
     const [{ data:user },{ subscription, plan },{ count:orderCount }] = await Promise.all([
-      supabase.from('users').select('*').eq('id',req.params.id).single(),
+      supabase.from('users').select(SAFE_USER_SELECT).eq('id',req.params.id).single(),
       getUserSubscription(req.params.id),
       supabase.from('orders').select('id',{ count:'exact', head:true }).eq('user_id',req.params.id),
     ]);
@@ -3088,7 +3163,8 @@ app.post('/admin/test-whatsapp', authenticate, adminLimiter, requireAdmin, async
   try {
     const { to, message='Test from ZAPIT admin 🚀' } = req.body;
     if (!to) return res.status(400).json({ success:false, error:'Phone number (to) is required.' });
-    const result = await sendWAMessage({ to, message });
+    if (!WA_PHONE_NUMBER_ID || !WA_ACCESS_TOKEN) return res.status(500).json({ success:false, error:'Platform WhatsApp not configured' });
+    const result = await sendWAMessage({ phoneNumberId: WA_PHONE_NUMBER_ID, accessToken: WA_ACCESS_TOKEN, to, message });
     return res.json({ success:result.success, data:result, message:result.success?'Test message sent!':'Failed.' });
   } catch { return res.status(500).json({ success:false, error:'Test failed.' }); }
 });

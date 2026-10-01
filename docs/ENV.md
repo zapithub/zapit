@@ -17,8 +17,9 @@ Copy `.env.example` to `.env`. Never commit `.env`.
 | `REPLICATE_API_KEY` | No | — | Replicate; fallback to stock image |
 | `PAYSTACK_SECRET_KEY` | No | — | Required for payments |
 | `BREVO_API_KEY` | No | — | Email; console mock if missing |
-| `ADMIN_SECRET` | No | — | `x-admin-secret` header |
-| `ADMIN_USERNAMES` | No | `admin` | comma list |
+| `ADMIN_SECRET` | No | — | `x-admin-secret` header (timingSafeEqual, required if used) |
+| `ADMIN_USERNAMES` | No | `admin` | comma list — **all are RESERVED** (registration blocked, Phase 6.1 S-01) |
+| `ADMIN_SEED_EMAIL` | No | — | email to promote to `role='admin'` after migration `20261002_phase6_01_admin_hardening.sql` |
 
 Generate secrets: `openssl rand -hex 32` for each `*_SECRET`.
 

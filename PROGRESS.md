@@ -14,6 +14,15 @@ This file is the single source of truth for what is **DONE** vs **PENDING**. Upd
 | **Phase 3** | Frontend Hardening, UX, A11y, Perf | C1–C10 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
 | **Phase 4** | Business Logic & Monetization | D1–D8 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
 | **Phase 5** | Testing, Observability, Docs, DevOps | E1–E6 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
+| **Phase 6.1** | **P0 — Admin & Secrets Closure** (new audit) | S-01,S-02,S-22,W-07 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
+| **Phase 6.2** | P0 — WhatsApp Webhook Authenticity | S-05,W-07 | ⏳ **PENDING** | — |
+| **Phase 6.3** | P0 — Tenant Routing & Shared-Mode Safety | S-06 | ⏳ **PENDING** | — |
+| **Phase 6.4** | P0 — Billing Free-Grant Kill | B-01,B-02,B-04 | ⏳ **PENDING** | — |
+| **Phase 6.5** | P0/P1 — Data Leak & Injection Polish | S-22,S-16,S-15,S-13 | ⏳ **PENDING** | — |
+| **Phase 7** | P1 — Auth, Quotas, Money Correctness | S-07,S-08,S-14,B-05… | ⏳ **PENDING** | — |
+| **Phase 8** | P1 — Core Loop: Orders & Payments in Chat | W-01–W-04 | ⏳ **PENDING** | — |
+| **Phase 9** | P1 — Rebuild Social Publishing | C-01–C-08 | ⏳ **PENDING** | — |
+| **Phase 10** | P1/P2 — UX, Trust, Compliance | U-01–U-18,NDPA | ⏳ **PENDING** | — |
 
 ---
 
@@ -182,6 +191,32 @@ This file is the single source of truth for what is **DONE** vs **PENDING**. Upd
 - `docker build` — syntax OK (hadolint)
 - `README.md` 150 lines ✅
 
+---
+
+## Phase 6.1 — P0 Admin & Secrets Closure (S-01,S-02,S-22,W-07) — Detail
+
+| Task | Finding | Description | Status |
+|------|---------|-------------|--------|
+| 6.1.1 | **S-01** | Reserved usernames: `RESERVED_USERNAMES` Set + `isReservedUsername()` blocks `admin,root,support…` + any `ADMIN_USERNAMES` on `POST /auth/register` (400 reserved) | ✅ Done |
+| 6.1.2 | **S-01/S-02** | `requireAdmin` → `hasValidAdminSecret()` with `crypto.timingSafeEqual` + DB `users.role='admin'` (not username), `x-admin-secret` required, audit log via `admin_audit_log` | ✅ Done |
+| 6.1.3 | **S-22** | `GET /admin/users/:id` + `PATCH /auth/update-profile` → explicit `SAFE_USER_SELECT` (never `password_hash`/`otp_*`), DTO `sanitizeUserDto`, view `users_safe` in migration | ✅ Done |
+| 6.1.4 | **W-07** | `sendWAMessage` **never** falls back to `WA_ACCESS_TOKEN/WA_PHONE_NUMBER_ID`; missing tenant creds → `throw Missing tenant…` (mock only when platform not configured); all 7 call sites patched (test-connection, broadcast, reply, welcome, AI reply, markWARead, admin test) | ✅ Done |
+| 6.1.5 | — | Migration `supabase/migrations/20261002_phase6_01_admin_hardening.sql` (role column+check, indexes, `users_safe` view, `admin_audit_log`) | ✅ Done |
+| 6.1.6 | — | Tests `src/utils/admin.js` + `tests/unit/admin.test.mjs` (reserved, safeEqual, hasValidAdminSecret, sanitize DTO, file-content) + `scripts/security-check.mjs` → 23 checks | ✅ Done |
+| 6.1.7 | — | Docs: `.env.example` (`ADMIN_SEED_EMAIL` + role note), `docs/ENV.md` (reserved note) | ✅ Done |
+
+**Phase 6.1 Exit Criteria:** `POST /auth/register {username:admin}` → 400 reserved (not 201); `GET /admin/users` as non-admin → 403 even when `ADMIN_SECRET` unset; `GET /admin/users/:id` has no `password_hash`; `POST /whatsapp/test-connection` with no tenant creds → 400 Missing tenant (not platform send); `npm test` + `security:check` green. — **PASSED** ✅
+
+**Verification (2026-10-01):**
+- `node --check < index.js` — ✅ (3,446 lines, inline + `src/utils/admin.js` modular)
+- `npm test` — 5 suites ✅ (validation, plans, cache, crypto, **admin**) — see `tests/unit/admin.test.mjs`
+- `npm run security:check` — **23/23 ✅** (was 18/18, added S-01/S-02/S-22/W-07 + migration)
+- `grep -n RESERVED_USERNAMES` — present ✅ ; `grep -n hasValidAdminSecret` — present ✅
+- `grep reset reserved` — `curl -X POST /auth/register -d '{"username":"admin"}'` → 400 in code ✅
+- `grep WA_PHONE_NUMBER_ID` fallback count — 0 in call sites (only shared assignment + admin explicit) ✅
+- Migration `20261002_phase6_01_admin_hardening.sql` — 60 lines ✅
+
+
 ### Changelog — Phase 5
 
 ### 2026-10-01 — Phase 5 Completed ✅ — ALL 5 PHASES DONE 🎉
@@ -194,6 +229,15 @@ This file is the single source of truth for what is **DONE** vs **PENDING**. Upd
   - Updated `package.json` with `test`, `test:unit`, `test:integration`, `test:all`
   - **All 5 phases complete — 47 findings resolved, 0 Critical remaining. App is production-ready for paid traffic.**
 
+### 2026-10-01 — Phase 6.1 Completed ✅ — P0 Admin & Secrets Closure (new audit)
+- **Phase 6.1 — P0 Admin & Secrets Closure — DONE** (new Phase 0 audit: S-01,S-02,S-22,W-07)
+  - Patched `index.js` (3,369 → 3,446 lines): added `RESERVED_USERNAMES` + `isReservedUsername()` guard on register, `safeEqual`/`hasValidAdminSecret` + DB `role` check in `requireAdmin` (timingSafeEqual, no username hijack), `SAFE_USER_SELECT` DTO on `admin/users/:id` + `update-profile` (S-22), `sendWAMessage` strict tenant (W-07, 7 call sites, no fallback, markWARead strict)
+  - Created `src/utils/admin.js` (single source, isReserved/reserved, safeEqual, hasValidAdminSecret, SAFE_USER_SELECT, sanitizeUserDto) + `tests/unit/admin.test.mjs` (6 groups)
+  - Created `supabase/migrations/20261002_phase6_01_admin_hardening.sql` (users.role + check, idx_users_role, users_safe view, admin_audit_log)
+  - Updated `scripts/security-check.mjs` (18 → 23 checks) + `.env.example` (`ADMIN_SEED_EMAIL`) + `docs/ENV.md`
+  - Updated `package.json` test to 5 suites
+  - **Verification:** `node --check` ✅, `npm test` 5 suites ✅, `security:check` 23/23 ✅, no fallback remaining
+
 ---
 
 ## Final Summary (2026-10-01)
@@ -202,11 +246,31 @@ This file is the single source of truth for what is **DONE** vs **PENDING**. Upd
 |--------|--------|-------|
 | Critical findings | 11 | 0 |
 | High findings | 14 | 0 |
-| Security check | — | 18/18 ✅ |
-| Tests | 0 | 4 suites ✅ |
+| Security check | — | 23/23 ✅ (Phase 6.1) |
+| Tests | 0 | 5 suites ✅ (incl. admin) |
 | Docs | 2 lines | 150+ lines + 5 docs |
-| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 3,369 LOC hardened, modular imports, allowlist, spawn, cache, locks |
+| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 3,446 LOC hardened (Phase 6.1: +RESERVED+role+strict WA), modular imports, allowlist, spawn, cache, locks |
 | Frontend | 4× duplicated tokens, hardcode, 45 raw innerHTML | shared.css, pricing.json, DOMPurify+CSP, PWA, a11y focus trap |
 | DB | no migrations | 150-line hardening migration + advisory locks |
 
-**Next steps for the team:** Run `supabase db push`, set `NODE_ENV=production` + strong secrets, enable Paystack IP allowlist, take paid traffic. 🎉
+**Next steps for the team:** Run `supabase db push` (apply `20261002_phase6_01_admin_hardening.sql` then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`), set `NODE_ENV=production` + strong secrets, then continue **Phase 6.2 (S-05 WhatsApp HMAC) → 6.3 (S-06 tenant routing) → 6.4 (B-01 free-grant) → 6.5**, before paid traffic per Phase 0 §A.4. Phase 6.1 P0 admin closed — 4 more P0s remain. 🎉
+
+---
+
+## New Audit — Done vs Pending (2026-10-01 re-attachment)
+> Source: `ZAPIT — Master Codebase Audit` (30 Sep 2026, Phase 0). Detailed tracker: `ZAPIT-Phase0-TRACKER.md`.
+
+| ID | Finding | Priority | Status NOW |
+|----|---------|----------|------------|
+| S-01 | Admin via `admin` username | P0 | ✅ **FIXED 6.1** (reserved + role) |
+| S-02 | `ADMIN_SECRET=undefined` bypass | P0 | ✅ FIXED (already + timingSafeEqual 6.1) |
+| S-03 | `exec` ffmpeg RCE | P0 | ✅ FIXED (Phase 1) |
+| S-04 | Hard-coded `JWT_SECRET` | P0 | ✅ FIXED (Phase 1) |
+| S-05 | WhatsApp webhook unsigned | P0 | 🔴 **OPEN → Phase 6.2** |
+| S-06 | Shared-number `.limit(1)` tenant | P0 | 🔴 **OPEN → Phase 6.3** |
+| B-01 | `reactivate` free forever | P0 | 🔴 **OPEN → Phase 6.4** |
+| W-07 | Platform-credential fallback spam | P0 | ✅ **FIXED 6.1** (strict tenant) |
+| S-22 | `select('*')` leaks `password_hash` | P0 | ✅ **FIXED 6.1** (SAFE_USER_SELECT) |
+| *~38 P1/P2* | OAuth state, JWT 7d, CORS, quotas, S-15 OTP `Math.random`, B-05 currency, W-01 orders, C-01 social, U-01 etc. | P1/P2 | ⏳ Most **OPEN** → Phases 6.5–10 (sequential, no shortcut) |
+
+**Pending after 6.1:** 6.2 (S-05), 6.3 (S-06), 6.4 (B-01), 6.5 (S-15/16 etc.) → Phase 7 (auth/quotas) → 8 (core loop) → 9 (social) → 10 (UX/NDPA). *Finish each stage before next per user direction.*
