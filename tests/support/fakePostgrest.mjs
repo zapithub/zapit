@@ -19,8 +19,15 @@ const db = {
     { id: 'p1', user_id: 'u1', name: 'Rice', price: 2500, currency: 'NGN', is_active: true, stock_quantity: 100 },
     { id: 'p2', user_id: 'u1', name: 'Beans', price: 1800, currency: 'NGN', is_active: true, stock_quantity: 50 },
   ],
-  subscriptions: [{ id: 's1', user_id: 'u1', plan: 'free', status: 'active', billing_cycle: 'free' }],
+  subscriptions: [{ id: 's1', user_id: 'u1', plan: 'creator', status: 'active', billing_cycle: 'monthly', created_at: '2026-09-01T00:00:00.000Z', expires_at: '2027-01-01T00:00:00.000Z' }],
+  users: [{ id: 'u1', email: 'ada@example.com', username: 'ada', full_name: 'Ada Owner', role: 'user',
+            email_verified: true, is_active: true, is_suspended: false, country_code: 'NG', currency: 'NGN',
+            password_hash: process.env.SEED_PASSWORD_HASH || null }],
+  sessions: [],
+  // Two inside the 24h window, one outside, one never seen (Phase 8.3 smoke).
+  contacts_seed: [],
   contacts: [], conversations: [], messages: [], order_drafts: [], orders: [], webhook_events: [], usage_counters: [], transactions: [],
+  wa_customer_tenant: [], wa_templates: [], broadcasts: [], posts: [], content_items: [], connected_accounts: [],
 };
 const seq = {};
 const nextId = (t) => { seq[t] = (seq[t] || 0) + 1; return `${t}-${seq[t]}`; };
@@ -57,6 +64,13 @@ const server = http.createServer(async (req, res) => {
       const fn = table.slice(4);
       log.push({ method: req.method, fn, body: body ? JSON.parse(body) : null });
       if (fn === 'consume_usage') { respond({ allowed: true, used: 1, limit: 100 }); return; }
+      // Advisory locks return a bare boolean (RPC scalars are not wrapped in an
+      // array the way table rows are).
+      if (fn === 'pg_try_advisory_lock' || fn === 'pg_advisory_unlock') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('true');
+        return;
+      }
       respond({ ok: true }); return;
     }
     log.push({ method: req.method, table, params, body: body ? JSON.parse(body) : null });
@@ -104,8 +118,21 @@ export function start(port = 54321) {
   // Read the seed token at start time (the caller sets it just before starting).
   db.business_settings[0].wa_access_token = process.env.SEED_WA_TOKEN || db.business_settings[0].wa_access_token || null;
   db.business_settings[0].paystack_secret_key = process.env.SEED_PAYSTACK_KEY || db.business_settings[0].paystack_secret_key || null;
+  db.users[0].password_hash = process.env.SEED_PASSWORD_HASH || db.users[0].password_hash || null;
+  if (process.env.SEED_BROADCAST_CONTACTS === '1' && !db.contacts.length) {
+    const now = Date.now();
+    db.contacts.push(
+      { id: 'c1', user_id: 'u1', name: 'Ada', phone: '2349000000001', segment: 'customer', opted_out: false, is_blocked: false, last_message_date: new Date(now - 3600 * 1000).toISOString() },
+      { id: 'c2', user_id: 'u1', name: 'Bola', phone: '2349000000002', segment: 'customer', opted_out: false, is_blocked: false, last_message_date: new Date(now - 23.5 * 3600 * 1000).toISOString() },
+      { id: 'c3', user_id: 'u1', name: 'Chidi', phone: '2349000000003', segment: 'lead', opted_out: false, is_blocked: false, last_message_date: new Date(now - 30 * 3600 * 1000).toISOString() },
+      { id: 'c4', user_id: 'u1', name: 'Dayo', phone: '2349000000004', segment: 'customer', opted_out: false, is_blocked: false, last_message_date: null },
+      { id: 'c5', user_id: 'u1', name: 'Eka', phone: '2349000000005', segment: 'customer', opted_out: true, is_blocked: false, last_message_date: new Date(now - 3600 * 1000).toISOString() },
+    );
+  }
   return new Promise(resolve => server.listen(port, '0.0.0.0', () => resolve({
     db, log,
-    stop: () => new Promise(r => server.close(r)),
+    // closeAllConnections: the API's keep-alive sockets would otherwise hold
+    // server.close() open forever.
+    stop: () => new Promise(r => { server.closeAllConnections?.(); server.close(() => r()); }),
   })));
 }

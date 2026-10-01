@@ -33,8 +33,9 @@ import { AUTH_ACCESS_COOKIE, AUTH_REFRESH_COOKIE, parseCookies, isMutating, csrf
 import { METRICS, quotaGuard, consumeQuota, quotaExceededBody, usageSnapshot, metricForContentType, periodStart } from './src/utils/quota.js';
 import { revenueTotals, revenueByDay, contentByType, contactsBySegment, ledgerTotals, fetchAllRows, headlineCurrency, ANALYTICS_MAX_ROWS } from './src/utils/analytics.js';
 import { extractInboundMessages, messageTextOf, classifyOptKeyword, isGreetingOnly, shouldWelcome, isBotPaused, takeoverFields, optOutFields, optInFields, STOP_CONFIRMATION, START_CONFIRMATION } from './src/utils/inbound.js';
-import { DRAFT_TTL_MS, detectOrderIntent, isOrderMenuKeyword, isCancelKeyword, applyMessageToDraft, nextMissingSlot, questionFor, draftExpired, computeOrderTotals, orderPaymentReference, buildOrderSummary, paymentInstructions, orderConfirmedMessage, evaluateOrderPayment, validatePaymentReference } from './src/utils/orders.js';
+import { DRAFT_TTL_MS, isDraftActive, detectOrderIntent, isOrderMenuKeyword, isCancelKeyword, applyMessageToDraft, nextMissingSlot, questionFor, draftExpired, computeOrderTotals, orderPaymentReference, buildOrderSummary, paymentInstructions, orderConfirmedMessage, evaluateOrderPayment, validatePaymentReference } from './src/utils/orders.js';
 import { isChargeableCurrency } from './src/config/plans.js';
+import { planBroadcast, validateTemplate, templatePayload, broadcastOutcomeMessage } from './src/utils/broadcast.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -563,6 +564,13 @@ const getPricingForLocation = __srcGetPricing;
 // Phase 8.2: the Paystack endpoint is overridable outside production so the
 // whole order loop (initialize → webhook verify → paid) can be smoke-tested
 // end-to-end with `npm run smoke:order`. Production always talks to Paystack.
+// Phase 8.3: same escape hatch for the WhatsApp Cloud API host (never in
+// production) so the broadcast/template send path can be smoke-tested.
+const BROADCAST_CRON = process.env.BROADCAST_CRON || '*/5 * * * *';
+const WA_GRAPH_BASE = (process.env.NODE_ENV !== 'production' && process.env.WA_GRAPH_BASE)
+  ? String(process.env.WA_GRAPH_BASE).replace(/\/+$/, '')
+  : 'https://graph.facebook.com/v19.0';
+
 const PAYSTACK_API_BASE = (process.env.NODE_ENV !== 'production' && process.env.PAYSTACK_API_BASE)
   ? String(process.env.PAYSTACK_API_BASE).replace(/\/+$/, '')
   : 'https://api.paystack.co';
@@ -904,6 +912,12 @@ async function handleOrderFlow({ businessSettings, businessUserId, contactRecord
   const active = stored && !draftExpired(stored) ? stored : null;
   const wantsOrder = detectOrderIntent(msgText) || isOrderMenuKeyword(msgText);
   if (!active && !wantsOrder) return false;
+  if (active && !wantsOrder && !isDraftActive(active)) {
+    // An old draft must not hijack an unrelated question — drop it and let the
+    // AI answer; the customer can start again with "order".
+    await clearOrderDraft(businessUserId, contactId);
+    return false;
+  }
 
   const products = await loadOrderProducts(businessUserId);
   if (!products.length) return false;                        // nothing to sell → the AI answers
@@ -948,7 +962,7 @@ async function sendWAMessage({ phoneNumberId, accessToken, to, message }) {
     throw new Error('Missing tenant WhatsApp credentials — configure your dedicated number in Settings → WhatsApp (individual mode).');
   }
   try {
-    const res = await fetch(`https://graph.facebook.com/v19.0/${numberId}/messages`, {
+    const res = await fetch(`${WA_GRAPH_BASE}/${numberId}/messages`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body: message } }),
@@ -966,7 +980,7 @@ async function markWARead(messageId, phoneNumberId, accessToken) {
   const numberId = phoneNumberId;
   if (!token || !numberId) return;
   try {
-    await fetch(`https://graph.facebook.com/v19.0/${numberId}/messages`, {
+    await fetch(`${WA_GRAPH_BASE}/${numberId}/messages`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ messaging_product: 'whatsapp', status: 'read', message_id: messageId }),
@@ -2681,6 +2695,139 @@ app.delete('/whatsapp/ai-logs/:id', authenticate, async (req, res) => {
   } catch { return res.status(500).json({ success:false, error:'Failed to delete log.' }); }
 });
 
+// ─── PHASE 8.3 (W-03): TEMPLATES + BROADCAST RUNS ───────────────
+// Free-form WhatsApp messages are only allowed inside the 24h window that
+// follows a customer's last inbound message; outside it a business must send an
+// approved template. Broadcasts also stored a `scheduled_for` that nothing ever
+// executed. These helpers add the template send path and the run executor.
+
+/** Cloud API template message (same auth/endpoint as the text sender). */
+async function sendWATemplate({ phoneNumberId, accessToken, to, template, params = [] }) {
+  if (!phoneNumberId || !accessToken) throw new Error('sendWATemplate: missing credentials');
+  if (!template?.name) throw new Error('sendWATemplate: template name is required');
+  const res = await fetch(`${WA_GRAPH_BASE}/${phoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(templatePayload(template, to, params)),
+  });
+  let data = null;
+  try { data = await res.json(); } catch { data = null; }
+  return { success: res.ok, data };
+}
+
+/** The audience a broadcast targets: opt-out/blocked always excluded. */
+async function loadBroadcastAudience({ userId, target_segment = 'all', limit = 1000 }) {
+  let q = supabase.from('contacts')
+    .select('id,name,phone,last_message_date,opted_out,is_blocked')
+    .eq('user_id', userId).eq('opted_out', false).eq('is_blocked', false)
+    .order('last_message_date', { ascending: false }).limit(limit);
+  if (target_segment && target_segment !== 'all') q = q.eq('segment', target_segment);
+  const { data } = await q;
+  return data || [];
+}
+
+async function loadTenantTemplate(userId, templateId) {
+  if (!templateId) return null;
+  try {
+    const { data } = await supabase.from('wa_templates').select('*')
+      .eq('id', templateId).eq('user_id', userId).single();
+    return data || null;
+  } catch { return null; }
+}
+
+async function loadBroadcastSettings(userId) {
+  try {
+    const { data } = await supabase.from('business_settings').select('*').eq('user_id', userId).single();
+    return data || null;
+  } catch { return null; }
+}
+
+/**
+ * Send one broadcast run: free text inside the window, template outside, and an
+ * honest record of who was skipped and why.
+ */
+async function runBroadcast({ broadcast, settings, contacts, message, template }) {
+  const plan = planBroadcast({ contacts, message, template, now: new Date() });
+  let creds = null;
+  try {
+    creds = resolveSendCreds({
+      connectionMethod: settings?.connection_method,
+      waPhoneNumberId: settings?.wa_phone_number_id,
+      waAccessToken: settings?.wa_access_token ? decrypt(settings.wa_access_token) : null,
+    }, { phoneNumberId: WA_PHONE_NUMBER_ID, accessToken: WA_ACCESS_TOKEN });
+  } catch (e) { creds = null; }
+
+  let sent = 0, failed = 0;
+  for (const item of plan.send) {
+    let r;
+    try {
+      if (!creds) throw new Error('Missing tenant WhatsApp credentials');
+      if (item.mode === 'template') {
+        const params = (template.variables || []).map(() => item.contact.name || 'there');
+        r = await sendWATemplate({
+          phoneNumberId: creds.phoneNumberId, accessToken: creds.accessToken,
+          to: item.contact.phone, template, params: params.length ? params : [item.contact.name || 'there'],
+        });
+      } else {
+        r = await sendWAMessage({ phoneNumberId: creds.phoneNumberId, accessToken: creds.accessToken, to: item.contact.phone, message: item.text });
+      }
+    } catch (e) { r = { success: false, error: e.message }; }
+    if (r?.success) sent++;
+    else {
+      failed++;
+      console.warn(JSON.stringify({ level:'warn', msg:'broadcast send failed', mode:item.mode, to:item.contact.phone, err:r?.error || r?.data?.error?.message || 'gateway refused' }));
+    }
+    await sleep(120);                                    // ~8 msg/sec rate limit
+  }
+
+  const results = {
+    sent, failed,
+    skipped_window: plan.counts.skipped_window,
+    by_mode: { text: plan.counts.text, template: plan.counts.template },
+    skipped_reasons: plan.counts.skipped_window ? ['outside_24h_window'] : [],
+    summary: broadcastOutcomeMessage({ counts: plan.counts, sent, failed }),
+  };
+  await supabase.from('broadcasts').update({
+    status: 'sent', sent_count: sent, failed_count: failed,
+    skipped_count: plan.counts.skipped_window, results,
+    completed_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+  }).eq('id', broadcast.id);
+  return { plan, results };
+}
+// GET /whatsapp/templates   (Phase 8.3 — W-03)
+app.get('/whatsapp/templates', authenticate, async (req, res) => {
+  try {
+    const { data } = await supabase.from('wa_templates').select('*').eq('user_id', req.user.id).order('created_at', { ascending:false });
+    return res.json({ success:true, data:data || [] });
+  } catch { return res.status(500).json({ success:false, error:'Failed to fetch templates.' }); }
+});
+
+// POST /whatsapp/templates
+// Our record of a Meta-approved template: name + language + body. The body's
+// `{{1}}`… placeholders are filled with the recipient's name on send.
+app.post('/whatsapp/templates', authenticate, async (req, res) => {
+  try {
+    const { ok, errors, value } = validateTemplate(req.body || {});
+    if (!ok) return res.status(400).json({ success:false, error:errors[0], errors });
+    const { data, error } = await supabase.from('wa_templates').upsert({
+      user_id:req.user.id, name:value.name, language:value.language, category:value.category,
+      body:value.body, variables:value.variables, status:value.status,
+      updated_at:new Date().toISOString(),
+    }, { onConflict:'user_id,name,language' }).select().single();
+    if (error) throw error;
+    return res.status(201).json({ success:true, data, message:'Template saved.' });
+  } catch { return res.status(500).json({ success:false, error:'Failed to save the template.' }); }
+});
+
+// DELETE /whatsapp/templates/:id
+app.delete('/whatsapp/templates/:id', authenticate, async (req, res) => {
+  try {
+    const { error } = await supabase.from('wa_templates').delete().eq('id', req.params.id).eq('user_id', req.user.id);
+    if (error) throw error;
+    return res.json({ success:true, message:'Template deleted.' });
+  } catch { return res.status(500).json({ success:false, error:'Failed to delete the template.' }); }
+});
+
 // GET /whatsapp/broadcasts
 app.get('/whatsapp/broadcasts', authenticate, async (req, res) => {
   try {
@@ -2690,9 +2837,12 @@ app.get('/whatsapp/broadcasts', authenticate, async (req, res) => {
 });
 
 // POST /whatsapp/broadcasts
+// Phase 8.3 (W-03): recipients inside the 24h window get the free-text message;
+// recipients outside it need an approved template, otherwise they are skipped
+// and reported (they used to be free-texted and silently rejected by Meta).
 app.post('/whatsapp/broadcasts', authenticate, async (req, res) => {
   try {
-    let { name, message, target_segment='all', scheduled_for } = req.body;
+    let { name, message, target_segment='all', scheduled_for, template_id } = req.body;
     name = sanitizeStr(name, 120);
     message = sanitizeStr(message, 2000);
     target_segment = sanitizeStr(target_segment, 30);
@@ -2710,35 +2860,43 @@ app.post('/whatsapp/broadcasts', authenticate, async (req, res) => {
       const { count: todayCount } = await supabase.from('broadcasts').select('id',{count:'exact',head:true}).eq('user_id', req.user.id).gte('created_at', since);
       if ((todayCount||0) >= 5) return res.status(429).json({ success:false, error:'Daily broadcast limit (5/day) reached. Try tomorrow.' });
     } catch {}
-    const { data:settings } = await supabase.from('business_settings').select('*').eq('user_id',req.user.id).single();
-    let cq = supabase.from('contacts').select('phone,name').eq('user_id',req.user.id).eq('opted_out',false).eq('is_blocked',false);
-    if (target_segment!=='all') cq = cq.eq('segment',target_segment);
-    const { data:contacts } = await cq;
-    if (!contacts?.length) return res.status(400).json({ success:false, error:'No contacts to send to.' });
-    const { data:broadcast, error:bErr } = await supabase.from('broadcasts').insert({ user_id:req.user.id, name, message, target_segment, scheduled_for:scheduled_for||new Date().toISOString(), status:scheduled_for?'scheduled':'sending', total_recipients:contacts.length }).select().single();
+    const settings = await loadBroadcastSettings(req.user.id);
+    const template = await loadTenantTemplate(req.user.id, template_id);
+    if (template_id && !template) return res.status(400).json({ success:false, error:'Template not found.' });
+    const contacts = await loadBroadcastAudience({ userId:req.user.id, target_segment });
+    if (!contacts.length) return res.status(400).json({ success:false, error:'No contacts to send to.' });
+
+    const { data:broadcast, error:bErr } = await supabase.from('broadcasts').insert({
+      user_id:req.user.id, name, message, target_segment,
+      scheduled_for:scheduled_for||new Date().toISOString(),
+      status:scheduled_for?'scheduled':'sending',
+      template_id: template?.id || null, total_recipients:contacts.length,
+    }).select().single();
     if (bErr) throw bErr;
-    if (!scheduled_for) {
-      let sentCount=0;
-      let creds = null;
-      try {
-        creds = resolveSendCreds({
-          connectionMethod: settings?.connection_method,
-          waPhoneNumberId: settings?.wa_phone_number_id,
-          waAccessToken: settings?.wa_access_token ? decrypt(settings.wa_access_token) : null,
-        }, { phoneNumberId: WA_PHONE_NUMBER_ID, accessToken: WA_ACCESS_TOKEN });
-      } catch (e) { creds = null; }
-      for (const c of contacts) {
-        let r;
-        try {
-          if (!creds) throw new Error('Missing tenant WhatsApp credentials');
-          r = await sendWAMessage({ phoneNumberId: creds.phoneNumberId, accessToken: creds.accessToken, to:c.phone, message:message.replace('{name}',c.name||'there') });
-        } catch (e) { r = { success:false, error: e.message }; }
-        if (r.success) sentCount++;
-        await sleep(120); // ~8 msg/sec rate limit
-      }
-      await supabase.from('broadcasts').update({ status:'sent', sent_count:sentCount, completed_at:new Date().toISOString() }).eq('id',broadcast.id);
+
+    // A scheduled run is planned at send time — the window moves.
+    if (scheduled_for) return res.status(201).json({ success:true, data:broadcast, message:'Broadcast scheduled!' });
+
+    const plan = planBroadcast({ contacts, message, template, now:new Date() });
+    if (!plan.send.length) {
+      await supabase.from('broadcasts').update({
+        status:'failed', skipped_count:plan.counts.skipped_window,
+        results:{ summary:broadcastOutcomeMessage({ counts:plan.counts, sent:0, failed:0 }), skipped_reasons:['outside_24h_window'] },
+        completed_at:new Date().toISOString(), updated_at:new Date().toISOString(),
+      }).eq('id',broadcast.id);
+      return res.status(400).json({
+        success:false,
+        error:`All ${plan.counts.total} recipients are outside the 24h window. Attach an approved template (POST /whatsapp/templates) to reach them.`,
+        data:{ counts:plan.counts },
+      });
     }
-    return res.status(201).json({ success:true, data:broadcast, message:scheduled_for?'Broadcast scheduled!': `Sent to ${contacts.length} contacts!` });
+    const { results } = await runBroadcast({ broadcast, settings, contacts, message, template });
+    const { data:fresh } = await supabase.from('broadcasts').select('*').eq('id',broadcast.id).single();
+    return res.status(201).json({
+      success:true, data:fresh || broadcast,
+      message: results.summary,
+      counts: { total:results.by_mode.text + results.by_mode.template + results.skipped_window, ...results.by_mode, skipped_window:results.skipped_window },
+    });
   } catch { return res.status(500).json({ success:false, error:'Failed to create broadcast.' }); }
 });
 
@@ -4457,6 +4615,43 @@ cron.schedule('*/5 * * * *', async () => {
   } catch (err) { console.error('[CRON publish]', err.message); }
   });
   if (!executed) console.log('[CRON publish] skipped (locked)');
+});
+
+// Send due scheduled broadcasts — every 5 minutes (with distributed lock).
+// W-03: a broadcast with `scheduled_for` was inserted and NEVER executed, so
+// "scheduled" was a promise the product could not keep.
+// Cadence is tunable (BROADCAST_CRON) so the scheduler can be verified without
+// waiting for a five-minute boundary; the default is every 5 minutes.
+cron.schedule(BROADCAST_CRON, async () => {
+  const { executed } = await withAdvisoryLock(supabase, 'cron:send-broadcasts', async () => {
+    try {
+      const nowIso = new Date().toISOString();
+      const { data: due } = await supabase.from('broadcasts').select('*')
+        .eq('status','scheduled').lte('scheduled_for', nowIso)
+        .order('scheduled_for', { ascending:true }).limit(5);
+      for (const b of (due || [])) {
+        // Lease: only one worker may move a row out of 'scheduled'.
+        const { data: claimed } = await supabase.from('broadcasts')
+          .update({ status:'sending', started_at:nowIso, updated_at:nowIso })
+          .eq('id', b.id).eq('status','scheduled').select();
+        if (!claimed?.length) continue;
+        const settings  = await loadBroadcastSettings(b.user_id);
+        const template  = await loadTenantTemplate(b.user_id, b.template_id);
+        const contacts  = await loadBroadcastAudience({ userId:b.user_id, target_segment:b.target_segment });
+        if (!contacts.length) {
+          await supabase.from('broadcasts').update({
+            status:'failed', results:{ summary:'No contacts matched the segment.' },
+            completed_at:new Date().toISOString(), updated_at:new Date().toISOString(),
+          }).eq('id', b.id);
+          continue;
+        }
+        // Planned at send time: the 24h window is relative to *now*.
+        const { results } = await runBroadcast({ broadcast:b, settings, contacts, message:b.message, template });
+        console.log(JSON.stringify({ level:'info', msg:'scheduled broadcast sent', id:b.id, userId:b.user_id, ...results }));
+      }
+    } catch (err) { console.error('[CRON broadcast]', err.message); }
+  });
+  if (!executed) console.log('[CRON broadcast] skipped (locked)');
 });
 
 // Monthly maintenance — 1st of every month at midnight.

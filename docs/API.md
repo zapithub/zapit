@@ -238,6 +238,30 @@ and a tenant's `paystack_secret_key` was never read):
 Apply migration `20261012_phase8_02_order_loop.sql`; without it the loop falls back to the legacy order
 shape (no multi-turn drafts) and never blocks the AI reply. Orders are metered like any reply.
 
+### Broadcasts & templates (Phase 8.3 — W-03)
+
+WhatsApp only accepts **free-form** messages inside the **24 hours** that follow a customer's last inbound
+message. Outside that window a business must send an **approved template**. Broadcasts used to free-text
+everyone (the gateway rejected the cold half, and the rejections were counted as failures) and a broadcast
+with `scheduled_for` was stored and **never executed**.
+
+- `POST /whatsapp/broadcasts` plans the audience against the window:
+  - **in-window** contacts → the free-text message (`{name}` is personalised);
+  - **out-of-window** contacts → the template passed as `template_id`, or **skipped** and reported
+    (`counts.skipped_window`, `data.results.skipped_reasons: ['outside_24h_window']`).
+  - If nobody is reachable the request fails with a 400 that says so — instead of silently sending nothing.
+  - The response carries `counts` (`text`, `template`, `skipped_window`) and the run stores `sent_count`,
+    `failed_count`, `skipped_count` and `results`.
+- **Templates** — `GET /whatsapp/templates`, `POST /whatsapp/templates`
+  (`{ name, language, body, category }`, `{{1}}`… placeholders are filled with the recipient's name on
+  send), `DELETE /whatsapp/templates/:id`. Invalid names/languages/bodies are refused with reasons.
+- **Scheduled runs execute** — a `BROADCAST_CRON` scheduler (default every 5 minutes) claims due rows with a
+  lease (`.eq('status','scheduled')` inside an advisory lock) and plans them **at send time**, because the
+  window is relative to *now*. Opted-out and blocked contacts are never targeted.
+- Apply migration `20261013_phase8_03_templates_and_broadcast_runs.sql`. Verify locally with
+  `npm run smoke:broadcast` (logs in, runs both broadcast shapes, and asserts the scheduler picks up a
+  scheduled run).
+
 ## Shared number & tenant routing (S-06)
 
 The Free plan uses ZAPIT's shared WhatsApp number. Delivery is deterministic — a message is only

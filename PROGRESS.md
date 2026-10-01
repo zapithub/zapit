@@ -600,20 +600,45 @@ fixed first — the routing queries themselves could never have worked with it i
   - Migration `20261012` (order payment fields + `order_drafts`); `tests/unit/orders.test.mjs`; `security-check` 152 → **166 checks**
   - **Verification:** `node --check` ✅, `npm test` 17 suites ✅, `security:check` 166/166 ✅, live order loop ✅
 
+## Phase 8.3 — Templates, the 24-hour window and running scheduled broadcasts (W-03) — Detail
+
+| Task | Finding | Description | Status |
+|------|---------|-------------|--------|
+| 8.3.0 | **W-03** | WhatsApp only allows free-form messages inside the **24 h** that follow a customer's last inbound message. The broadcast path ignored that entirely: it free-texted every contact and the cold half was rejected by the gateway (counted as "failed" sends). Recipients are now classified from `contacts.last_message_date` and only the in-window half gets free text | ✅ Done |
+| 8.3.1 | **W-03** | Out-of-window contacts get an **approved template** when the broadcast carries `template_id` — the Cloud API `type: 'template'` payload with `{{1}}…` filled from the recipient's name — and are otherwise **skipped and reported** (`skipped_window`, `skipped_reasons: ['outside_24h_window']`). If nobody is reachable the request returns 400 with the reason instead of pretending to send | ✅ Done |
+| 8.3.2 | **W-03** | **Scheduled broadcasts now execute.** A `BROADCAST_CRON` scheduler (default `*/5 * * * *`, tunable) claims due rows under the advisory lock + a `status='scheduled'` lease, re-plans them **at send time** (the window moves), and records `sent_count`/`failed_count`/`skipped_count`/`results`. Opted-out and blocked contacts are never targeted | ✅ Done |
+| 8.3.3 | — | Template management: `GET/POST /whatsapp/templates`, `DELETE /whatsapp/templates/:id`, with validation (lowercase name, `en`/`en_US` language, body ≤ 1024, ≤ 10 variables) and upsert per (name, language) | ✅ Done |
+| 8.3.4 | — | Migration `20261013_phase8_03_templates_and_broadcast_runs.sql` (wa_templates + RLS, broadcast run columns, due-run index, prune function; idempotent) | ✅ Done |
+| 8.3.5 | — | `tests/unit/broadcast.test.mjs` (18th suite): window edges (exactly 24 h inside, 24 h + 1 ms outside, future timestamps never open a window), partition, template validation/rendering/payload, the plan matrix (text / template / skip), and wiring + migration assertions. `security-check` 166 → **178 checks** | ✅ Done |
+
+**Phase 8.3 Exit criteria:** free text is never sent outside the window — **PASS ✅**; an approved template reaches the cold half — **PASS ✅**; skipped contacts are reported — **PASS ✅**; scheduled broadcasts actually run — **PASS ✅**; tests + security checks green — **PASS ✅**.
+
+**Verification (2026-10-01):**
+- `node --input-type=module --check` on `index.js`/`src/utils/broadcast.js` — ✅; `npm test` — **18 suites ✅**; `npm run security:check` — **178/178 ✅** (was 166)
+- **Live proof** (`npm run smoke:broadcast` — real login, in-memory PostgREST, stub Graph API, 15/15 checks): free-text broadcast → **2 sent, 2 skipped** with the reason reported; template broadcast → **4/4** (2 free text + 2 template payloads with the correct Cloud API shape); opted-out contact never targeted; a broadcast scheduled 2 s ahead was **picked up by the scheduler**, executed with the same window rules and recorded `Sent to 2/4 · 2 skipped` ✅
+- The live run caught a real defect the unit tests could not see: `templatePayload` was used but never imported (template sends failed with `ReferenceError`) — now imported and covered by the smoke
+
+### 2026-10-01 — Phase 8.3 Completed ✅ — Templates, the 24-hour window and running scheduled broadcasts (W-03)
+- **Phase 8.3 — DONE**
+  - `src/utils/broadcast.js`: 24 h window, recipient partition, template validation/render/payload, `planBroadcast`
+  - `index.js`: `sendWATemplate`, `runBroadcast`, window-aware broadcast route, template CRUD, `cron:send-broadcasts` with a lease and `BROADCAST_CRON`
+  - Migration `20261013` (wa_templates + broadcast run columns); `tests/unit/broadcast.test.mjs`; `security-check` 166 → **178 checks**
+  - **Verification:** `node --check` ✅, `npm test` 18 suites ✅, `security:check` 178/178 ✅, `npm run smoke:broadcast` 15/15 ✅
+
 ## Final Summary (2026-10-01)
 
 | Metric | Before | After |
 |--------|--------|-------|
 | Critical findings | 11 | 0 |
 | High findings | 14 | 0 |
-| Security check | — | 166/166 ✅ (Phase 8.2) |
-| Tests | 0 | 17 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth, session, cookies, quota, currency, analytics, inbound, orders) |
+| Security check | — | 178/178 ✅ (Phase 8.3) |
+| Tests | 0 | 18 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth, session, cookies, quota, currency, analytics, inbound, orders, broadcast) |
 | Docs | 2 lines | 150+ lines + 5 docs |
-| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 4,585 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE · 7.2 sessions+cookies · 7.3 quotas · 7.4 one price resolver + currency-pinned webhook · 7.5 exact analytics aggregates · 8.1 inbound ingestion + consent + takeover · 8.2 in-chat order + payment loop), modular imports, allowlist, spawn, cache, locks |
+| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 4,783 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE · 7.2 sessions+cookies · 7.3 quotas · 7.4 one price resolver + currency-pinned webhook · 7.5 exact analytics aggregates · 8.1 inbound ingestion + consent + takeover · 8.2 in-chat order + payment loop · 8.3 templates + 24h window + broadcast scheduler), modular imports, allowlist, spawn, cache, locks |
 | Frontend | 4× duplicated tokens, hardcode, 45 raw innerHTML | shared.css, pricing.json, DOMPurify+CSP, PWA, a11y focus trap |
-| DB | no migrations | 10 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout, 7.1 OAuth state, 7.2 hashed sessions, 7.3 usage counters, 7.5 analytics aggregates) + advisory locks (7.4 is code-only) |
+| DB | no migrations | **13 migrations** (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout, 7.1 OAuth state, 7.2 hashed sessions, 7.3 usage counters, 7.5 analytics aggregates, 8.1 inbound state, 8.2 order loop, 8.3 templates + broadcast runs) + advisory locks (7.4 is code-only) |
 
-**Next steps for the team:** Run `supabase db push` — apply the pending migrations `20261002`…**`20261012`** (`20261001` too if the Phase 4 hardening was never pushed) — then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`; set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN` + `TRUST_PROXY=false` (unless genuinely behind a trusted proxy); share `GET /whatsapp/qr-code` route codes with free-plan users; create the Stripe/RDP-free Paystack account currencies you intend to charge (GBP/EUR are **not** settleable by Paystack — GB/EU customers are billed the USD price as USD); then continue **Phase 7.5 (analytics counts)** → Phase 8 → 9 → 10, before paid traffic per Phase 0 §A.4. Phases 6.1–6.5 + 7.1–7.4 closed — **all P0 audit findings + the 6.5 P1s + B-05/B-06/B-09 resolved**. 🎉
+**Next steps for the team:** Run `supabase db push` — apply the pending migrations `20261002`…**`20261013`** (`20261001` too if the Phase 4 hardening was never pushed) — then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`; set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN` + `TRUST_PROXY=false` (unless genuinely behind a trusted proxy); share `GET /whatsapp/qr-code` route codes with free-plan users; create the Stripe/RDP-free Paystack account currencies you intend to charge (GBP/EUR are **not** settleable by Paystack — GB/EU customers are billed the USD price as USD); then continue **Phase 9 (social publishing)** → 10 (UX/NDPA) → 11 (observability), before paid traffic per Phase 0 §A.4. Locally: `npm test` (18 suites) · `npm run security:check` (178) · `npm run smoke:order` / `npm run smoke:broadcast` (live, no network needed). **Phases 6.1–6.5, 7.1–7.5 and 8.1–8.3 are closed — every P0 finding plus the 6.5/7.x/8.x P1 slice (S-07…S-16, B-05/B-06/B-09, D-05, W-01–W-04) is resolved.** 🎉
 
 ---
 
@@ -637,6 +662,23 @@ fixed first — the routing queries themselves could never have worked with it i
 | B-07 | Free Agency via API (admin grants unbounded/unaudited) | P0 | ✅ **FIXED 6.4** (1–365 days, audited, webhook refuses free plans) |
 | S-14 | Paystack amount/currency unchecked | P1 | ✅ **FIXED 6.4** (pure `evaluateCharge`; signature+idempotency earlier) |
 | B-05 | USD price sold as £/€ (four hand-rolled price lookups; GBP/EUR are not Paystack currencies) | P1 | ✅ **FIXED 7.4** (one resolver, currency-pinned webhook) |
-| *~38 P1/P2* | OAuth state, JWT 7d, CORS, quotas, S-15 OTP `Math.random`, B-05 currency, B-09 reset, W-01 orders, C-01 social, U-01 etc. | P1/P2 | ⏳ Most **OPEN** → Phases 6.5–10 (sequential, no shortcut) |
+| S-15 | OTP `Math.random`, plaintext, no lockout, email oracle | P1 | ✅ **FIXED 6.5** (CSPRNG, hash-at-rest, real lockout, constant time) |
+| S-16 | Mass assignment on 7 PATCH routes | P1 | ✅ **FIXED 6.5** (`pickFields` allow-lists everywhere) |
+| S-13 | `X-Forwarded-For[0]` currency arbitrage | P1 | ✅ **FIXED 6.5** (proxy-aware `req.ip`, `TRUST_PROXY`) |
+| S-07 | OAuth `state` forgeable | P1 | ✅ **FIXED 7.1** (opaque hashed single-use state + PKCE S256) |
+| S-08 | JWT 7d, raw sessions, no reuse detection | P1 | ✅ **FIXED 7.2** (15-min access, rotated hashed refresh, reuse revokes the family) |
+| S-09 | Tokens in URLs (logs/CDN, reload = logout) | P1 | ✅ **FIXED 7.2** (httpOnly cookies + CSRF; dashboard bootstraps from storage) |
+| B-06 | Most quotas unenforced | P1 | ✅ **FIXED 7.3** (`usage_counters` + atomic `consume_usage`, every advertised quota metered) |
+| B-09 | Monthly reset with no filter (no-op) | P1 | ✅ **FIXED 7.3** (period-scoped counters; legacy mirror reset via filtered paging + prune) |
+| D-05 | 1,000-row truncation in analytics/revenue | P1 | ✅ **FIXED 7.5** (SQL aggregates + complete paging fallback, per-currency) |
+| W-01 | No order/payment creation at all | P1 | ✅ **FIXED 8.2** (chat capture → order + `generateOrderNumber` + tenant-key Paystack/bank → verified `paid`) |
+| W-02 | Welcome stale-state | P1 | ✅ **FIXED 8.1** (`welcomed_at`, count computed, welcomed **and** answered) |
+| W-04 | Webhook: first message only, no STOP/takeover | P1 | ✅ **FIXED 8.1** (every entry/change/message, dedup, STOP/START, human takeover + resume) |
+| W-03 | Broadcast free-text outside 24h; scheduled never runs | P1 | ✅ **FIXED 8.3** (window-aware broadcasts, templates, `BROADCAST_CRON` executes scheduled runs) |
+| N-1/N-2 | Welcome bug / STOP / human takeover flag | — | ✅ Addressed by 8.1 |
+| B-03 | No recurring billing/dunning | P1 | 🔴 OPEN → Phase 9 |
+| C-01–C-08 | Social publishing layer (Meta ids, token refresh, YouTube media, IG/FB/TikTok, automation cron) | P1 | 🔴 OPEN → Phase 9 |
+| U-01–U-18 | UX, trust & NDPA compliance | P1/P2 | 🔴 OPEN → Phase 10 |
+| D-01–D-11, S-17–S-28, AR-1–10 | Remaining P2s, observability & scale | P2 | 🔴 OPEN → Phases 10–11 |
 
-**Pending after 6.4:** 6.5 (S-15/S-16/S-13 polish) → Phase 7 (auth/quotas) → 8 (core loop) → 9 (social) → 10 (UX/NDPA). *Finish each stage before next per user direction.*
+**Pending after 8.3:** Phase 9 (social publishing rebuild C-01–C-08 + B-03) → Phase 10 (UX/trust/NDPA U-01–U-18) → Phase 11 (observability & scale). *Finish each stage before next per user direction.*

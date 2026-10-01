@@ -58,7 +58,7 @@ Our prior `CONSULTANT_REVIEW.md` (47 findings) covered security, architecture, f
 | **B-09** | Monthly reset `update({reply_count:0})` **no filter** → no-op | P1 | S–M | ✅ **FIXED 7.3** — quotas are period-scoped (no reset needed); the legacy mirror resets via a paged, explicitly filtered `.in('user_id', ids)` under an advisory lock, and stale counters are pruned | **DONE 7.3** |
 | **W-01** | **No order/payment creation at all** | P1 | XL | ✅ **FIXED 8.2** — chat capture (product/quantity/address, `order_drafts`) → `orders` row via `generateOrderNumber()` + unique `zapord_…` reference → tenant-key Paystack link or bank reference → webhook verifies (reference/currency/amount) before `paid` + confirmation; `payment-link`/`verify-payment` recovery routes; migration `20261012` | **DONE 8.2** |
 | **W-02** | Welcome stale-state (msg 1 & 2 both only welcome) | P1 | M | ✅ **FIXED 8.1** — the count is computed (never the stale row), `contacts.welcomed_at` marks the single welcome, first message is welcomed+answered | **DONE 8.1** |
-| **W-03** | Broadcast free-text outside 24h → fails; scheduled never runs | P1 | L | 🔴 OPEN — scheduled insert no cron | Phase 8 |
+| **W-03** | Broadcast free-text outside 24h → fails; scheduled never runs | P1 | L | ✅ **FIXED 8.3** — recipients are classified against the 24h window; the cold half gets an approved template or is skipped and reported; `BROADCAST_CRON` executes scheduled runs under a lease with per-recipient outcomes; migration `20261013` | **DONE 8.3** |
 | **W-04** | Webhook: only first message, no dedup, no human-takeover | P1 | M | ✅ **FIXED 8.1** — every entry/change/message processed (cap 100) with per-wamid dedup; STOP/START recorded with timestamps; manual reply sets `human_takeover` + a 24h bot pause, releasable via `/resume` | **DONE 8.1** |
 | **C-01** | Meta `accountId=/me.id` wrong (needs Page/IG Business id) | P1 | L | 🔴 OPEN — OAuth still stores `/me.id` | **Phase 9 (rebuild publishing)** |
 | **C-02** | No token refresh anywhere | P1 | L | 🔴 OPEN | Phase 9 |
@@ -91,7 +91,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 | **7.4** | **P1 — Currency-Correct Checkout & Verification** | B-05 | P1 | M | ✅ **DONE 2026-10-01** — single price resolver; only NGN/GHS/ZAR/KES/USD are charged; GBP/EUR → USD price reported as USD (never relabelled); webhook pins currency + exact minor amount to the resolver; 14 suites, 128/128 checks |
 | **7.5** | **P1 — Exact Analytics Aggregates** | D-05 | P1 | M | ✅ **DONE 2026-10-01** — SQL aggregates + paging fallback (no 1,000-row truncation), per-currency revenue, paginated lists with `meta.has_more`, broken overview cache fixed; migration `20261010`; 15 suites, 138/138 checks |
 | **7** | **P1 — Auth, Quotas, Money Correctness** | S-07, S-08, S-09, S-14, B-05, B-06, B-09, D-05, S-15/16/17, S-12 follow-up | P1 | L | ✅ **DONE 2026-10-01 (7.1–7.5)** — OAuth nonce+PKCE, JWT 15 m + hashed refresh + cookie path, Paystack amount matrix, usage_counters + middleware, filtered reset, exact analytics aggregates | **DONE** |
-| **8** | **P1 — Core Loop: Orders & Payments in Chat** | W-01, W-02, W-03 (templates), W-04 (dedup), W-07 done, N-1/N-2 | P1 | XL | 🟡 **IN PROGRESS 2026-10-01** — **8.1 DONE** (W-02/W-04: batched ingestion, welcome-once, STOP/START, human takeover, migration `20261011`) · **8.2 DONE** (W-01: in-chat order capture → order row + tenant-key Paystack link/bank reference → verified settlement, migration `20261012`; 17 suites, 166/166 checks); **8.3 templates + scheduling (W-03)** pending | Phase 8.3 |
+| **8** | **P1 — Core Loop: Orders & Payments in Chat** | W-01, W-02, W-03 (templates), W-04 (dedup), W-07 done, N-1/N-2 | P1 | XL | ✅ **DONE 2026-10-01 (8.1–8.3)** — 8.1 W-02/W-04 (batched ingestion, welcome-once, STOP/START, human takeover) · 8.2 W-01 (in-chat order capture → order row + tenant-key Paystack link/bank reference → verified settlement) · 8.3 W-03 (24h window + templates, scheduled broadcasts executed); migrations `20261011`–`20261013`; **18 suites, 178/178 checks** | **DONE** |
 | **9** | **P1 — Rebuild Social Publishing** | C-01–C-08, P1 | L | Rebuild publishing layer in worker: correct Page/IG ids, long-lived token exchange, refresh job, YouTube multipart, lease-based scheduler (no 5-min window) |
 | **10** | **P1/P2 — UX, Trust, Compliance** | U-01–U-18, §3.6 NDPA, §6 premium system | P1/P2 | L | `U-01` reload not logout (refresh flow), privacy/terms real pages, consent versioned, Today/Sell/Grow/Account IA, `aria-live` etc. already, health `readyz` |
 | **11** | **Observability & Scale Polish** | AR-1–10, §8 SLOs, §9 reliability | P2 | L | Queue (pg-boss), pino + Sentry, `readyz/livez`, chaos checklist, indexes §4.5, retention |
@@ -108,7 +108,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 **PENDING (must still do, in order):**
 - **Phase 6.5 DONE:** S-13, S-15, S-16, S-22 — **all P0 + 6.5 P1s closed** (S-06 in 6.3, B-01/B-02/B-04/B-07 in 6.4, S-05 in 6.2, S-01/S-22/W-07 in 6.1)
 - **Phase 7 complete (7.1–7.5).** Next: **Phase 8** (core loop) → 9 (social) → 10 (UX/NDPA). S-07 closed in 7.1, S-08/S-09 in 7.2, B-06/B-09 in 7.3, B-05 in 7.4, D-05 in 7.5; S-14 closed in 6.4; S-13/S-15/S-16 closed in 6.5
-- **Phase 8:** 8.1 DONE (W-02/W-04) · 8.2 DONE (W-01 core loop) · **8.3 W-03 templates + scheduling pending** · N-1/N-2
+- **Phase 8:** ✅ **COMPLETE** — 8.1 (W-02/W-04) · 8.2 (W-01) · 8.3 (W-03, includes N-1/N-2 behaviour) · next: **Phase 9 — social publishing rebuild (C-01–C-08)**
 - **Phase 9:** C-01–C-08 rebuild
 - **Phase 10:** U-01–U-18, NDPA
 - **Phase 11:** AR-1–10, SLOs
@@ -302,7 +302,22 @@ entirely requires the Phase 7 auth rework (soft-accept + owner notification + CA
 - `npm test` (16 suites) + `npm run security:check` (152/152) + `node --check` green — **PASS ✅ (2026-10-01)**
 - Live batch proof: one signed delivery with 4 messages across 2 entries/3 changes → 4 per-wamid claims + 4 routing decisions in the log (the old handler processed only the first) — **PASS ✅**
 
-**DONE 8.1:** W-02, W-04. **DONE 8.2:** W-01. **Pending in Phase 8:** 8.3 W-03 (templates + scheduling), N-1/N-2 → then 9 (social) → 10 (UX/NDPA).
+**DONE 8.1:** W-02, W-04. **DONE 8.2:** W-01. **DONE 8.3:** W-03. **Phase 8 COMPLETE.**
+
+
+## 5k. Phase 8.3 — Exit criteria & evidence (DONE 2026-10-01)
+
+**Deliverables:** `src/utils/broadcast.js` (24h window, partition, template validation/render/payload, `planBroadcast`), `index.js` (`sendWATemplate`, `loadBroadcastAudience`, `loadTenantTemplate`, `runBroadcast`, window-aware `POST /whatsapp/broadcasts`, `GET/POST /whatsapp/templates`, `DELETE /whatsapp/templates/:id`, `cron:send-broadcasts` with `BROADCAST_CRON` + lease), `supabase/migrations/20261013_phase8_03_templates_and_broadcast_runs.sql`, `tests/unit/broadcast.test.mjs` (18th suite), `tests/support/broadcastWindow.smoke.mjs` (`npm run smoke:broadcast`), `scripts/security-check.mjs` 166 → 178, `docs/API.md` ("Broadcasts & templates").
+
+**Exit criteria (tracker L61 slice):**
+- no free text outside the 24h window — **PASS ✅** (window classification from `contacts.last_message_date`; cold contacts are templated or skipped, never free-texted)
+- templates — **PASS ✅** (validated definitions + Cloud API `type:'template'` payload with positional parameters)
+- scheduled broadcasts run — **PASS ✅** (scheduler with advisory lock + `status='scheduled'` lease, re-planned at send time; live-proven by a broadcast scheduled 2 s ahead)
+- outcomes are honest — **PASS ✅** (`sent_count`/`failed_count`/`skipped_count`/`results.summary`, per-recipient failure logs)
+- `npm test` (18 suites) + `npm run security:check` (178/178) + `node --check` green — **PASS ✅ (2026-10-01)**
+- live proof: `npm run smoke:broadcast` 15/15 — **PASS ✅**
+
+**DONE 8.3:** W-03. **Phase 8 complete (8.1–8.3).** Next: **Phase 9 — rebuild social publishing (C-01–C-08)** → 10 (UX/NDPA) → 11 (observability).
 
 
 ## 5j. Phase 8.2 — Exit criteria & evidence (DONE 2026-10-01)

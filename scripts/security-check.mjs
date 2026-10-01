@@ -453,6 +453,50 @@ try {
 } catch { fail('tests/unit/currency.test.mjs missing (B-05)'); }
 
 
+
+// ── Phase 8.3 — 24h window, templates, scheduled broadcasts (W-03) ──
+try {
+  const bc = fs.readFileSync('src/utils/broadcast.js','utf8');
+  for (const fn of ['isInServiceWindow','partitionByWindow','validateTemplate','renderTemplateBody','templatePayload','planBroadcast'])
+    if (!bc.includes(`export function ${fn}`)) fail(`broadcast util lacks ${fn} (W-03)`);
+  if (!bc.includes('export const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000')) fail('the service window is not 24h (W-03)');
+  else pass('The free-form window is exactly 24h (W-03)');
+  if (!bc.includes("outside_24h_window") || !bc.includes("mode: 'template'")) fail('outside-window recipients are not separated (W-03)');
+  else pass('Outside-window recipients are templated or skipped, never free-texted (W-03)');
+} catch { fail('src/utils/broadcast.js missing (W-03)'); }
+try {
+  if (!indexJs.includes('async function sendWATemplate(') || !indexJs.includes('templatePayload(template, to, params)'))
+    fail('there is no template send path (W-03)');
+  else pass('Templates are sent as Cloud API template messages (W-03)');
+  if (indexJs.includes("message.replace('{name}',c.name||'there')")) fail('the old free-text-everyone broadcast loop is back (W-03)');
+  else pass('The old free-text-everyone broadcast loop is gone (W-03)');
+  if (!indexJs.includes('planBroadcast({ contacts, message, template, now:new Date() })')) fail('broadcasts do not consult the window (W-03)');
+  else pass('Broadcasts are planned against the 24h window (W-03)');
+  if (!indexJs.includes('skipped_count') || !indexJs.includes('outside the 24h window')) fail('skipped recipients are not reported (W-03)');
+  else pass('Skipped recipients are reported to the merchant (W-03)');
+  if (!indexJs.includes("app.post('/whatsapp/templates'") || !indexJs.includes("app.get('/whatsapp/templates'")) fail('no template management routes (W-03)');
+  else pass('Merchants can store and list templates (W-03)');
+  if (!indexJs.includes('cron:send-broadcasts') || !indexJs.includes('BROADCAST_CRON')) fail('scheduled broadcasts still never run (W-03)');
+  else pass('Scheduled broadcasts have a scheduler (W-03)');
+  if (!/\.eq\('id', b\.id\)\.eq\('status','scheduled'\)\.select\(\)/.test(indexJs)) fail('the broadcast scheduler has no lease (W-03)');
+  else pass('The broadcast scheduler leases each row exactly once (W-03)');
+} catch { fail('index.js missing for the broadcast checks'); }
+try {
+  const mig = fs.readFileSync('supabase/migrations/20261013_phase8_03_templates_and_broadcast_runs.sql','utf8');
+  if (!mig.includes('CREATE TABLE IF NOT EXISTS wa_templates') || !mig.includes('UNIQUE (user_id, name, language)')) fail('Phase 8.3 migration lacks wa_templates (W-03)');
+  else pass('Phase 8.3 migration adds wa_templates (W-03)');
+  for (const col of ['template_id','failed_count','skipped_count','results','started_at']) {
+    if (!mig.includes(`ADD COLUMN IF NOT EXISTS ${col}`)) { fail(`Phase 8.3 migration lacks broadcasts.${col} (W-03)`); break; }
+  }
+  if (!mig.includes('idx_broadcasts_due')) fail('Phase 8.3 migration lacks the due-broadcast index (W-03)');
+  else pass('Phase 8.3 migration indexes due broadcasts (W-03)');
+} catch { fail('Phase 8.3 migration file missing (W-03)'); }
+try {
+  const t = fs.readFileSync('tests/unit/broadcast.test.mjs','utf8');
+  if (!t.includes('23.9') || !t.includes('outside_24h_window')) fail('broadcast test does not pin the window edges (W-03)');
+  else pass('Broadcast test pins the window edges and skip reasons (W-03)');
+} catch { fail('tests/unit/broadcast.test.mjs missing (W-03)'); }
+
 // ── Phase 8.2 — the in-chat order + payment loop (W-01) ──
 try {
   const ord = fs.readFileSync('src/utils/orders.js','utf8');
@@ -597,8 +641,8 @@ try {
 
 console.log('');
 if (fails) {
-  console.error(`\n${fails} check(s) failed — Phase 8.2 hardening not done.`);
+  console.error(`\n${fails} check(s) failed — Phase 8.3 hardening not done.`);
   process.exit(1);
 } else {
-  console.log('All security checks passed (Phases 1–8.2). ✅');
+  console.log('All security checks passed (Phases 1–8.3). ✅');
 }
