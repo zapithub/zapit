@@ -1,6 +1,6 @@
 # ZAPIT — Phase 0 Master Audit → Tracker (New Attachment)
 **Source:** `ZAPIT — Master Codebase Audit, Architecture Review & World-Class Upgrade Blueprint` (30 Sep 2026, Phase 0, no code modified) — pasted by user 2026-10-01  
-**Current codebase:** `arena/01a0f67b-zapit` after Phases 1–5 + **6.1** (47 findings → 0 Critical, plus new audit: S-01/S-02/S-22/W-07 now FIXED, `npm test` 5 suites + `security:check` 23/23)  
+**Current codebase:** `arena/01a0f67b-zapit` after Phases 1–5 + **6.1 + 6.2** (47 findings → 0 Critical, plus new audit: S-01/S-02/S-05/S-22/W-07 now FIXED, `npm test` 6 suites + `security:check` 28/28 + live E2E)  
 **Rule:** Do in phases, report Done vs Pending, no shortcut, finish stage before next. This file is the single source of truth for the **NEW** audit.
 
 > **Evidence labels per §0.1:** FACT/OBSERVATION/RISK/RECOMMENDATION as in Phase 0. Priorities P0/P1/P2/P3 as in §12.
@@ -37,7 +37,7 @@ Our prior `CONSULTANT_REVIEW.md` (47 findings) covered security, architecture, f
 | **S-02** | `ADMIN_SECRET=undefined` → `undefined===undefined` admin | **P0** | S | ✅ **FIXED** Phase 1 + **hardened 6.1** (`hasValidAdminSecret` timingSafeEqual, `safeEqual`) |
 | **S-03** | `exec()` shell RCE via `duration`/`topic` → `ffmpeg` | **P0** | S–M | ✅ **FIXED** Phase 1 (`spawn` arg array, duration validate, tmp file, timeout) |
 | **S-04** | Hard-coded `JWT_SECRET='zapit-secret-change-me'` + placeholder Supabase | **P0** | S | ✅ **FIXED** Phase 1 (fail-closed prod, random dev fallback, `__requireEnv`) |
-| **S-05** | WhatsApp webhook unsigned | **P0** | S | 🔴 **OPEN** — Paystack fixed, **WhatsApp not**. `POST /webhook/whatsapp` has no `X-Hub-Signature-256` check | **Phase 6.2** |
+| **S-05** | WhatsApp webhook unsigned | **P0** | S | ✅ **FIXED 6.2** — raw body + `X-Hub-Signature-256` HMAC `timingSafeEqual` (401/503 fail-closed), wamid replay dedup, constant-time GET handshake | **DONE 6.2** |
 | **S-06** | Shared-number routes to arbitrary tenant (`.limit(1)`) | **P0** | M | 🔴 **OPEN** — still copies platform `WA_PHONE_NUMBER_ID` into each tenant, webhook `limit(1)` | **Phase 6.3** |
 | **B-01** | `reactivate` gives free 30d forever | **P0** | S | 🔴 **OPEN** — `POST /subscription/reactivate` still finds latest `cancelled` and sets `active` no payment | **Phase 6.4** |
 | **W-07** | Platform-credential fallback → spam via platform number | **P0** | S | ✅ **FIXED 6.1** — `sendWAMessage` strict tenant (no fallback, throw), 7 call sites patched | **DONE 6.1** |
@@ -80,7 +80,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 | Phase | Name (new) | Scope from Phase 0 | Priority gated | Effort | Exit criteria (must all pass) |
 |-------|------------|--------------------|----------------|--------|-------------------------------|
 | **6.1** | **P0 — Admin & Secrets Closure** | S-01 (admin by name), S-22 (hash leak), W-07 fallback, S-02 follow-up hardening | P0 | S | ✅ **DONE 2026-10-01** — Register `admin` blocked (400); `/admin/*` requires DB `role='admin'`; `select('*')` gone; `sendWAMessage` never falls back; `security:check` 23/23 + 5 suites |
-| **6.2** | **P0 — WhatsApp Webhook Authenticity** | S-05 (HMAC), S-25/S-06 related | P0 | S | `POST /webhook/whatsapp` verifies `X-Hub-Signature-256` with `timingSafeEqual`, raw-body captured, 401 on fail, replay dedup, no platform fallback |
+| **6.2** | **P0 — WhatsApp Webhook Authenticity** | S-05 (HMAC), S-25/S-06 related | P0 | S | ✅ **DONE 2026-10-01** — raw body captured, `X-Hub-Signature-256` HMAC `timingSafeEqual`, 401 invalid / 503 prod-missing-secret, wamid replay dedup, constant-time handshake; 6 suites + 28/28 + live E2E (401/403/200/503) |
 | **6.3** | **P0 — Tenant Routing & Shared-Mode Safety** | S-06, partial W-04 | P0 | M | Shared-mode either disabled with 410 + migration guide, or discriminator code + sticky `wa_customer_tenant` table; `UNIQUE(wa_phone_number_id)` enforced; notebook test shows 2 shared tenants route correctly |
 | **6.4** | **P0 — Billing Free-Grant Kill** | B-01, B-02, B-04, B-07 | P0 | S–M | `reactivate` requires payment or removed; `cancel` sets `cancel_at` period-end; webhook checks amount/currency; `transactions` unique; no free Agency via API |
 | **6.5** | **P0/P1 — Data Leak & Injection Hardening** | S-22, S-16, S-03 follow-up, S-15 OTP, S-13 XFF | P0/P1 | M | `users` DTO allow-list; `crypto.randomInt` OTP; allow-list PATCH; `XFF` uses `req.ip` (trust proxy) |
@@ -100,14 +100,14 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 - S-02, S-03, S-04, S-10, S-12, S-11, CORS/HSTS, trust proxy, OTP hash/lockout (partial), CORS, product/KB/broadcast quotas partially, pagination max 100, subscriptionCache, distributedLock, DOMPurify+CSP meta, PWA, pricing.json single source, transactions/webhook_events tables in migration, 4 unit suites, Dockerfile, CI.
 
 **PENDING (must still do, in order):**
-- **Phase 6.2–6.5 (P0):** S-05, S-06, B-01 (+ S-04 follow-up) — **S-01,S-22,W-07 DONE in 6.1**
+- **Phase 6.3–6.5 (P0):** S-06, B-01 (+ S-04 follow-up) — **S-05 DONE in 6.2**, S-01/S-22/W-07 DONE in 6.1
 - **Phase 7:** S-07, S-08, S-09, S-14, B-05/B-06/B-09, D-05, S-15/16 etc.
 - **Phase 8:** W-01 core loop (largest), W-02–W-04, N-1/N-2
 - **Phase 9:** C-01–C-08 rebuild
 - **Phase 10:** U-01–U-18, NDPA
 - **Phase 11:** AR-1–10, SLOs
 
-**Do not onboard paying users until Phase 6 is complete** (Phase 0 §A.4). We now execute **Phase 6.1**.
+**Do not onboard paying users until Phase 6 is complete** (Phase 0 §A.4). We now execute **Phase 6.3** (S-06 tenant routing).
 
 ---
 
@@ -131,3 +131,18 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 - `npm test` (5 suites) + `npm run security:check` 23/23 + `node --check` green — **PASS ✅ (2026-10-01)**
 
 **DONE 6.1:** S-01,S-02,S-22,W-07. **Pending after 6.1:** 6.2 (S-05 WhatsApp HMAC), 6.3 (S-06 tenant routing), 6.4 (B-01 free-grant), 6.5 (S-16/S-15 OTP/XFF polish — S-22 done) → then Phase 7.
+
+---
+
+## 4. Phase 6.2 — Exit criteria & evidence (DONE 2026-10-01)
+
+**Deliverables:** `src/utils/webhook.js` (verifyMetaSignature / verifyWebhookVerifyToken / claimWebhookEvent), `index.js` (raw-body middleware before json, POST HMAC + dedup + 503/401/400, constant-time GET, boot warnings, health `whatsapp_webhook`), `tests/unit/webhook.test.mjs`, `tests/integration/webhook-auth.test.mjs`, `supabase/migrations/20261003_phase6_02_wa_webhook.sql`, `scripts/security-check.mjs` 23→28.
+
+**Exit criteria (all must pass):**
+- Unsigned `POST /webhook/whatsapp` → **401** (dev) / **503** (prod without secret) — never 200 — **PASS ✅**
+- Valid `X-Hub-Signature-256` → **200 ack**; tampered/wrong-secret/cross-body → **401** — **PASS ✅** (live)
+- Wrong `hub.verify_token` → **403**; correct → 200 `text/plain` echo — **PASS ✅** (live)
+- Duplicate `wamid` skipped via atomic `webhook_events` claim (23505) — **PASS ✅** (unit; DB unique from Phase 4 + guarded index in 6.2 migration)
+- `npm test` (6 suites) + `npm run security:check` (28/28) + `node --check` green — **PASS ✅ (2026-10-01)**
+
+**DONE 6.2:** S-05. **Pending after 6.2:** 6.3 (S-06 tenant routing), 6.4 (B-01 free-grant), 6.5 (S-16/S-15 OTP/XFF polish) → then Phase 7.

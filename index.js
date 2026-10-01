@@ -23,6 +23,7 @@ import { PLAN_LIMITS as __SRC_PLAN_LIMITS, getPricingForLocation as __srcGetPric
 import { subscriptionCache } from './src/utils/cache.js';
 import { withAdvisoryLock } from './src/utils/distributedLock.js';
 import { parsePagination } from './src/utils/validation.js';
+import { verifyMetaSignature, verifyWebhookVerifyToken, claimWebhookEvent } from './src/utils/webhook.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -41,6 +42,7 @@ const {
   WA_ACCESS_TOKEN,
   WA_PHONE_NUMBER_ID,
   WA_VERIFY_TOKEN     = 'zapit_webhook_secret_2024',
+  WA_APP_SECRET,
   SHARED_WA_NUMBER,
   HF_API_KEY,
   REPLICATE_API_KEY,
@@ -61,6 +63,12 @@ const {
   UNSPLASH_ACCESS_KEY,
   ENCRYPTION_KEY,
 } = process.env;
+
+// ─── WHATSAPP WEBHOOK SIGNING (Phase 6.2 — S-05) ─────────────────
+// Meta signs every webhook delivery with the app secret. WA_APP_SECRET is the
+// dedicated WhatsApp Business app secret; fall back to META_APP_SECRET when the
+// same Meta app is used. Null ⇒ the POST webhook fails closed in production.
+const WA_SIGNATURE_SECRET = WA_APP_SECRET || META_APP_SECRET || null;
 
 // ─── RESERVED USERNAMES (Phase 6.1 — S-01) ───────────────────────
 const RESERVED_USERNAMES = new Set([
@@ -189,6 +197,9 @@ app.use('/webhook/paystack', express.raw({ type: (req) => {
   const ct = (req.headers['content-type'] || '').toLowerCase();
   return ct.includes('application/json');
 }}));
+// Raw body for WhatsApp — Meta's X-Hub-Signature-256 is computed over the exact
+// bytes sent, so the signature must be verified against the unparsed body (S-05).
+app.use('/webhook/whatsapp', express.raw({ type: () => true, limit: '1mb' }));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
@@ -2064,24 +2075,45 @@ app.post('/whatsapp/conversations/:id/reply', authenticate, async (req, res) => 
 
 // ─── WHATSAPP WEBHOOKS ─────────────────────────────────────────
 
-// GET /webhook/whatsapp  — Meta verification
+// GET /webhook/whatsapp  — Meta verification (constant-time, fail-closed)
 app.get('/webhook/whatsapp', (req, res) => {
   const mode      = req.query['hub.mode'];
   const token     = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-  if (mode === 'subscribe' && token === WA_VERIFY_TOKEN) {
+  if (verifyWebhookVerifyToken(mode, token, WA_VERIFY_TOKEN)) {
     console.log('[WA WEBHOOK] Verified!');
-    return res.status(200).send(challenge);
+    return res.type('text/plain').status(200).send(String(challenge ?? ''));
   }
+  console.warn(JSON.stringify({ level:'warn', msg:'wa webhook verify rejected', requestId:req.id, ip:req.ip }));
   return res.status(403).send('Forbidden');
 });
 
 // POST /webhook/whatsapp  — Incoming messages
 app.post('/webhook/whatsapp', webhookLimiter, async (req, res) => {
-  res.status(200).json({ success:true }); // Respond immediately to Meta
+  // ── 1. Authenticity (S-05): verify Meta's HMAC over the exact raw bytes ──
+  const raw = Buffer.isBuffer(req.body) ? req.body
+            : (typeof req.body === 'string' ? Buffer.from(req.body, 'utf8') : null);
+  if (!raw || raw.length === 0) return res.status(400).json({ success:false, error:'Empty body.' });
+
+  if (!WA_SIGNATURE_SECRET) {
+    if (NODE_ENV === 'production') {
+      console.error(JSON.stringify({ level:'error', msg:'wa webhook rejected: app secret not configured', requestId:req.id }));
+      return res.status(503).json({ success:false, error:'Webhook not configured.' });
+    }
+    console.warn('[WA WEBHOOK] WA_APP_SECRET/META_APP_SECRET not set — signature check skipped (non-production only)');
+  } else if (!verifyMetaSignature(raw, req.headers['x-hub-signature-256'], WA_SIGNATURE_SECRET)) {
+    console.warn(JSON.stringify({ level:'warn', msg:'wa webhook invalid signature', requestId:req.id, ip:req.ip }));
+    return res.status(401).json({ success:false, error:'Invalid signature.' });
+  }
+
+  let body;
+  try { body = JSON.parse(raw.toString('utf8')); }
+  catch { return res.status(400).json({ success:false, error:'Invalid JSON.' }); }
+
+  // ── 2. Acknowledge Meta immediately (only after authenticity is proven) ──
+  res.status(200).json({ success:true });
 
   try {
-    const body = req.body;
     if (body?.object !== 'whatsapp_business_account') return;
     const value   = body.entry?.[0]?.changes?.[0]?.value;
     if (!value?.messages?.length) return;
@@ -2093,6 +2125,13 @@ app.post('/webhook/whatsapp', webhookLimiter, async (req, res) => {
     const customerName = contact?.profile?.name || 'Customer';
     const msgId        = message.id;
     const msgType      = message.type;
+
+    // ── 3. Replay/retry protection: one delivery per wamid (S-05) ──
+    const claimed = await claimWebhookEvent(supabase, 'whatsapp', msgId, { from, type:msgType });
+    if (!claimed) {
+      console.log(JSON.stringify({ level:'info', msg:'wa duplicate delivery skipped', msgId }));
+      return;
+    }
 
     let msgText = '';
     if      (msgType==='text')        msgText = message.text?.body||'';
@@ -3254,6 +3293,7 @@ app.get('/health', async (_req, res) => {
     database: 'checking',
     ai:       HF_API_KEY ? 'configured' : 'fallback mode',
     whatsapp: WA_ACCESS_TOKEN ? 'configured' : 'not configured',
+    whatsapp_webhook: WA_SIGNATURE_SECRET ? 'signed' : 'unverified',
     email:    BREVO_API_KEY ? 'configured' : 'not configured',
     payments: PAYSTACK_SECRET_KEY ? 'configured' : 'not configured',
   };
@@ -3269,7 +3309,7 @@ app.get('/health', async (_req, res) => {
 
 // GET /status
 app.get('/status', async (_req, res) => {
-  const checks = { api:'online', database:'checking', ai_text:HF_API_KEY?'configured':'unconfigured', ai_image:REPLICATE_API_KEY?'configured':'unconfigured', whatsapp:WA_ACCESS_TOKEN?'configured':'unconfigured', email:BREVO_API_KEY?'configured':'unconfigured', payments:PAYSTACK_SECRET_KEY?'configured':'unconfigured' };
+  const checks = { api:'online', database:'checking', ai_text:HF_API_KEY?'configured':'unconfigured', ai_image:REPLICATE_API_KEY?'configured':'unconfigured', whatsapp:WA_ACCESS_TOKEN?'configured':'unconfigured', whatsapp_webhook:WA_SIGNATURE_SECRET?'signed':'unverified', email:BREVO_API_KEY?'configured':'unconfigured', payments:PAYSTACK_SECRET_KEY?'configured':'unconfigured' };
   try { await supabase.from('users').select('id').limit(1); checks.database='online'; } catch { checks.database='offline'; }
   return res.json({ success:true, data:checks });
 });
@@ -3433,6 +3473,11 @@ const server = app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`   ✅ WhatsApp:  ${WA_ACCESS_TOKEN ? 'configured' : '⚠️  mock mode'}`);
   console.log(`   ✅ Email:     ${BREVO_API_KEY ? 'Brevo' : '⚠️  console mock'}`);
   console.log(`   ✅ Payments:  ${PAYSTACK_SECRET_KEY ? 'Paystack' : '⚠️  not configured'}`);
+  if (NODE_ENV === 'production') {
+    // S-05 fail-closed guardrails — surfaced loudly at boot, not silently at runtime
+    if (!WA_SIGNATURE_SECRET) console.error('   ⛔ WA_APP_SECRET / META_APP_SECRET missing — POST /webhook/whatsapp will reject with 503');
+    if (!WA_VERIFY_TOKEN || WA_VERIFY_TOKEN === 'zapit_webhook_secret_2024') console.error('   ⛔ WA_VERIFY_TOKEN is default/empty — set a strong unique value for the Meta handshake');
+  }
   console.log(`\n🚀 Africa's #1 WhatsApp + Content Automation Platform is live!\n`);
 });
 

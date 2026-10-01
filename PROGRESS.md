@@ -15,7 +15,7 @@ This file is the single source of truth for what is **DONE** vs **PENDING**. Upd
 | **Phase 4** | Business Logic & Monetization | D1–D8 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
 | **Phase 5** | Testing, Observability, Docs, DevOps | E1–E6 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
 | **Phase 6.1** | **P0 — Admin & Secrets Closure** (new audit) | S-01,S-02,S-22,W-07 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
-| **Phase 6.2** | P0 — WhatsApp Webhook Authenticity | S-05,W-07 | ⏳ **PENDING** | — |
+| **Phase 6.2** | P0 — WhatsApp Webhook Authenticity | S-05,W-07 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
 | **Phase 6.3** | P0 — Tenant Routing & Shared-Mode Safety | S-06 | ⏳ **PENDING** | — |
 | **Phase 6.4** | P0 — Billing Free-Grant Kill | B-01,B-02,B-04 | ⏳ **PENDING** | — |
 | **Phase 6.5** | P0/P1 — Data Leak & Injection Polish | S-22,S-16,S-15,S-13 | ⏳ **PENDING** | — |
@@ -217,6 +217,33 @@ This file is the single source of truth for what is **DONE** vs **PENDING**. Upd
 - Migration `20261002_phase6_01_admin_hardening.sql` — 60 lines ✅
 
 
+---
+
+## Phase 6.2 — P0 WhatsApp Webhook Authenticity (S-05) — Detail
+
+| Task | Finding | Description | Status |
+|------|---------|-------------|--------|
+| 6.2.1 | **S-05** | Raw body captured for `POST /webhook/whatsapp` (`express.raw({type:()=>true})` mounted **before** `express.json`) — HMAC is computed over the exact bytes Meta signed | ✅ Done |
+| 6.2.2 | **S-05** | `X-Hub-Signature-256` verified with `crypto.createHmac('sha256')` + `timingSafeEqual` via `src/utils/webhook.js` (`verifyMetaSignature`); rejects missing/malformed/legacy `sha1=` headers; sha256-only | ✅ Done |
+| 6.2.3 | **S-05** | Fail-closed: no `WA_APP_SECRET`/`META_APP_SECRET` in production → **503** (`Webhook not configured.`); invalid signature → **401**; dev-only skip is logged loudly; boot-time production warning | ✅ Done |
+| 6.2.4 | **S-05** | Replay/retry protection: per-`wamid` atomic claim in `webhook_events` (UNIQUE provider,event_id, 23505 → skip); duplicate delivery never re-replies or double-counts | ✅ Done |
+| 6.2.5 | **S-05** | GET handshake now constant-time (`verifyWebhookVerifyToken`, fail-closed) + `text/plain` challenge echo; old `token === WA_VERIFY_TOKEN` removed; rejected handshakes logged | ✅ Done |
+| 6.2.6 | — | DB defense-in-depth migration `20261003_phase6_02_wa_webhook.sql`: guarded unique partial index on `messages.whatsapp_message_id`, `webhook_events(provider, received_at DESC)` index, `prune_webhook_events(30)` retention helper | ✅ Done |
+| 6.2.7 | — | Tests: `tests/unit/webhook.test.mjs` (signature matrix incl. tampered/wrong-secret/sha1/object, handshake, dedup claim, wiring) + `tests/integration/webhook-auth.test.mjs` (live 401/200/403 matrix) + `scripts/security-check.mjs` → **28 checks** | ✅ Done |
+| 6.2.8 | — | Docs: `.env.example` + `docs/ENV.md` (`WA_APP_SECRET` required in prod, verify-token warning); `/health` + `/status` expose `whatsapp_webhook: signed/unverified` | ✅ Done |
+
+**Phase 6.2 Exit Criteria:** unsigned `POST /webhook/whatsapp` → 401 (or 503 in prod without secret), **never 200**; valid HMAC → 200 ack; tampered/wrong-secret/cross-body → 401; wrong verify token → 403; duplicate `wamid` skipped; `npm test` + `security:check` green. — **PASSED** ✅
+
+**Verification (2026-10-01, live E2E):**
+- `node --check < index.js` — ✅ (3,490 lines)
+- `npm test` — **6 suites ✅** (validation, plans, cache, crypto, admin, **webhook**)
+- `npm run security:check` — **28/28 ✅** (was 23/23; added 5 S-05 checks + webhook util/migration)
+- Live dev server (PORT=3099, `WA_APP_SECRET` set): correct handshake → 200 `text/plain` `1158201444`; wrong token → 403; unsigned POST → **401**; tampered signature → **401**; valid signature → 200 ack; valid message-shape → 200 (claim attempted); malformed JSON w/ valid sig → 400 ✅
+- Live production server (no app secret): POST → **503 `Webhook not configured.`**, boot log `⛔ WA_APP_SECRET / META_APP_SECRET missing` ✅
+- `tests/integration/webhook-auth.test.mjs` — ✅ live against both servers (401 matrix + 503 prod)
+- `grep token === WA_VERIFY_TOKEN` — 0 ✅; raw middleware present before json ✅
+
+
 ### Changelog — Phase 5
 
 ### 2026-10-01 — Phase 5 Completed ✅ — ALL 5 PHASES DONE 🎉
@@ -238,6 +265,16 @@ This file is the single source of truth for what is **DONE** vs **PENDING**. Upd
   - Updated `package.json` test to 5 suites
   - **Verification:** `node --check` ✅, `npm test` 5 suites ✅, `security:check` 23/23 ✅, no fallback remaining
 
+### 2026-10-01 — Phase 6.2 Completed ✅ — P0 WhatsApp Webhook Authenticity (S-05)
+- **Phase 6.2 — P0 WhatsApp Webhook Authenticity — DONE**
+  - Created `src/utils/webhook.js` (`verifyMetaSignature` HMAC-SHA256 + `timingSafeEqual`, `verifyWebhookVerifyToken` fail-closed constant-time, `claimWebhookEvent` wamid dedup, `timingSafeEqualStr`)
+  - Patched `index.js` (3,446 → 3,490 lines): raw-body middleware for `/webhook/whatsapp` before `express.json`, POST verifies `X-Hub-Signature-256` over exact bytes (401 invalid / 503 prod-missing-secret / 400 malformed JSON), dedup claim before processing, GET handshake constant-time + `text/plain`, production boot warnings, `/health` + `/status` expose `whatsapp_webhook`
+  - Created `tests/unit/webhook.test.mjs` + `tests/integration/webhook-auth.test.mjs`; `package.json` test now **6 suites**, `test:integration` runs health + webhook-auth
+  - Created `supabase/migrations/20261003_phase6_02_wa_webhook.sql` (guarded unique `messages.whatsapp_message_id` index, `webhook_events` index, `prune_webhook_events`)
+  - Updated `scripts/security-check.mjs` (23 → 28 checks), `.env.example` + `docs/ENV.md` (`WA_APP_SECRET`)
+  - **Verification:** `node --check` ✅, `npm test` 6 suites ✅, `security:check` 28/28 ✅, live E2E dev (401/403/200/400) + prod fail-closed (503) ✅
+
+
 ---
 
 ## Final Summary (2026-10-01)
@@ -246,14 +283,14 @@ This file is the single source of truth for what is **DONE** vs **PENDING**. Upd
 |--------|--------|-------|
 | Critical findings | 11 | 0 |
 | High findings | 14 | 0 |
-| Security check | — | 23/23 ✅ (Phase 6.1) |
-| Tests | 0 | 5 suites ✅ (incl. admin) |
+| Security check | — | 28/28 ✅ (Phase 6.2) |
+| Tests | 0 | 6 suites ✅ (incl. admin, webhook) |
 | Docs | 2 lines | 150+ lines + 5 docs |
-| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 3,446 LOC hardened (Phase 6.1: +RESERVED+role+strict WA), modular imports, allowlist, spawn, cache, locks |
+| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 3,490 LOC hardened (6.1: +RESERVED+role+strict WA; 6.2: +HMAC webhook), modular imports, allowlist, spawn, cache, locks |
 | Frontend | 4× duplicated tokens, hardcode, 45 raw innerHTML | shared.css, pricing.json, DOMPurify+CSP, PWA, a11y focus trap |
 | DB | no migrations | 150-line hardening migration + advisory locks |
 
-**Next steps for the team:** Run `supabase db push` (apply `20261002_phase6_01_admin_hardening.sql` then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`), set `NODE_ENV=production` + strong secrets, then continue **Phase 6.2 (S-05 WhatsApp HMAC) → 6.3 (S-06 tenant routing) → 6.4 (B-01 free-grant) → 6.5**, before paid traffic per Phase 0 §A.4. Phase 6.1 P0 admin closed — 4 more P0s remain. 🎉
+**Next steps for the team:** Run `supabase db push` (apply `20261002_phase6_01_admin_hardening.sql`, `20261003_phase6_02_wa_webhook.sql`, then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`), set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`** + unique `WA_VERIFY_TOKEN`, then continue **Phase 6.3 (S-06 tenant routing) → 6.4 (B-01 free-grant) → 6.5**, before paid traffic per Phase 0 §A.4. Phase 6.1+6.2 P0s closed — 2 more P0s remain (S-06, B-01). 🎉
 
 ---
 
@@ -266,11 +303,11 @@ This file is the single source of truth for what is **DONE** vs **PENDING**. Upd
 | S-02 | `ADMIN_SECRET=undefined` bypass | P0 | ✅ FIXED (already + timingSafeEqual 6.1) |
 | S-03 | `exec` ffmpeg RCE | P0 | ✅ FIXED (Phase 1) |
 | S-04 | Hard-coded `JWT_SECRET` | P0 | ✅ FIXED (Phase 1) |
-| S-05 | WhatsApp webhook unsigned | P0 | 🔴 **OPEN → Phase 6.2** |
+| S-05 | WhatsApp webhook unsigned | P0 | ✅ **FIXED 6.2** (HMAC + raw body + dedup) |
 | S-06 | Shared-number `.limit(1)` tenant | P0 | 🔴 **OPEN → Phase 6.3** |
 | B-01 | `reactivate` free forever | P0 | 🔴 **OPEN → Phase 6.4** |
 | W-07 | Platform-credential fallback spam | P0 | ✅ **FIXED 6.1** (strict tenant) |
 | S-22 | `select('*')` leaks `password_hash` | P0 | ✅ **FIXED 6.1** (SAFE_USER_SELECT) |
 | *~38 P1/P2* | OAuth state, JWT 7d, CORS, quotas, S-15 OTP `Math.random`, B-05 currency, W-01 orders, C-01 social, U-01 etc. | P1/P2 | ⏳ Most **OPEN** → Phases 6.5–10 (sequential, no shortcut) |
 
-**Pending after 6.1:** 6.2 (S-05), 6.3 (S-06), 6.4 (B-01), 6.5 (S-15/16 etc.) → Phase 7 (auth/quotas) → 8 (core loop) → 9 (social) → 10 (UX/NDPA). *Finish each stage before next per user direction.*
+**Pending after 6.2:** 6.3 (S-06 tenant routing), 6.4 (B-01 free-grant), 6.5 (S-15/S-16 etc.) → Phase 7 (auth/quotas) → 8 (core loop) → 9 (social) → 10 (UX/NDPA). *Finish each stage before next per user direction.*

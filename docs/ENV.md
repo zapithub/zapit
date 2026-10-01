@@ -13,6 +13,8 @@ Copy `.env.example` to `.env`. Never commit `.env`.
 | `ENCRYPTION_KEY` | **Yes (prod)** | — | 32 chars for AES-256-CBC |
 | `FRONTEND_URL` | No | `http://localhost:5500` | CORS allowlist |
 | `WA_*` | No | — | WhatsApp Cloud API; mock if missing |
+| `WA_APP_SECRET` | **Yes (prod)** | falls back to `META_APP_SECRET` | Meta app secret — verifies `X-Hub-Signature-256` on `POST /webhook/whatsapp` (S-05). Missing in production → webhook rejects 503 |
+| `WA_VERIFY_TOKEN` | **Yes (prod)** | weak default | Meta GET handshake token; must be a strong unique value in production (constant-time compare) |
 | `HF_API_KEY` | No | — | Hugging Face; fallback to template |
 | `REPLICATE_API_KEY` | No | — | Replicate; fallback to stock image |
 | `PAYSTACK_SECRET_KEY` | No | — | Required for payments |

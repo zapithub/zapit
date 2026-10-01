@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ZAPIT — Security smoke check for CI (Phases 1–6.1)
+// ZAPIT — Security smoke check for CI (Phases 1–6.2)
 // Fails (exit 1) if any critical invariant is violated.
 // No external deps, runs on Node 18+.
 
@@ -130,10 +130,42 @@ try {
 if (!indexJs.includes('generateOTP') || !indexJs.includes('hashOTP')) fail('OTP helpers missing');
 else pass('OTP helpers present');
 
+// ── 19. Phase 6.2 — WhatsApp webhook authenticity (S-05) ──────────
+if (!indexJs.includes("app.use('/webhook/whatsapp', express.raw(")) fail('WhatsApp webhook raw-body middleware missing (S-05)');
+else pass('WhatsApp raw body captured before json (S-05)');
+if (!indexJs.includes('x-hub-signature-256')) fail('X-Hub-Signature-256 not checked (S-05)');
+else pass('X-Hub-Signature-256 verified (S-05)');
+if (!indexJs.includes('verifyMetaSignature') || !indexJs.includes('WA_SIGNATURE_SECRET')) fail('verifyMetaSignature / WA_SIGNATURE_SECRET missing (S-05)');
+else pass('Meta HMAC verifier wired (S-05)');
+if (!indexJs.includes('Webhook not configured') || !indexJs.includes('status(503)')) fail('Production fail-closed when app secret missing (S-05)');
+else pass('Missing app secret fails closed in production (S-05)');
+if (!indexJs.includes('Invalid signature') || !indexJs.includes('status(401)')) fail('401 on invalid signature missing (S-05)');
+else pass('Invalid signature → 401 (S-05)');
+if (!indexJs.includes("claimWebhookEvent(supabase, 'whatsapp'")) fail('WhatsApp replay dedup claim missing (S-05)');
+else pass('WhatsApp replay dedup claim present (S-05)');
+if (indexJs.includes('token === WA_VERIFY_TOKEN')) fail('GET verify token still uses === (S-05)');
+else pass('Verify token uses constant-time compare (S-05)');
+
+// ── 20. Phase 6.2 — webhook util + migration ───────────────────────
+try {
+  const wu = fs.readFileSync('src/utils/webhook.js','utf8');
+  if (!wu.includes('timingSafeEqual') || !wu.includes('createHmac')) fail('webhook util missing timingSafeEqual HMAC (S-05)');
+  else pass('webhook util has constant-time HMAC verify (S-05)');
+  if (!wu.includes('sha256=') || /sha1=/.test(wu)) fail('webhook util must accept sha256 only, never legacy sha1 (S-05)');
+  else pass('webhook util rejects legacy sha1 (S-05)');
+  if (!wu.includes('23505')) fail('webhook util duplicate-claim handling missing (S-05)');
+  else pass('webhook util handles duplicate claim 23505 (S-05)');
+} catch { fail('src/utils/webhook.js missing (S-05)'); }
+try {
+  const mig = fs.readFileSync('supabase/migrations/20261003_phase6_02_wa_webhook.sql','utf8');
+  if (!mig.includes('idx_messages_wa_message_id_unique') || !mig.includes('prune_webhook_events')) fail('Phase 6.2 migration missing replay index / retention helper');
+  else pass('Phase 6.2 migration present');
+} catch { fail('Phase 6.2 migration file missing'); }
+
 console.log('');
 if (fails) {
-  console.error(`\n${fails} check(s) failed — Phase 6.1 not done.`);
+  console.error(`\n${fails} check(s) failed — Phase 6.2 not done.`);
   process.exit(1);
 } else {
-  console.log('All security checks passed (Phases 1–6.1). ✅');
+  console.log('All security checks passed (Phases 1–6.2). ✅');
 }
