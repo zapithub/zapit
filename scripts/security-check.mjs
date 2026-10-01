@@ -657,6 +657,28 @@ try {
   else pass('CI runs the order-loop and broadcast proofs (W-01/W-03)');
 } catch { fail('.github/workflows/ci.yml missing'); }
 
+// ── Phase 8.4d — the runtime the app is built for is the runtime it runs on ──
+// `@supabase/realtime-js` requires Node >= 22 (built-in WebSocket). On Node 20
+// `createClient()` threw "WebSocket not found" and the process died at import —
+// which is exactly what the Phase 8.4 CI proof caught, on a Dockerfile pinned to
+// node:20. These checks keep the three places that pin the runtime in step.
+try {
+  const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
+  const min = Number(String(pkg.engines?.node || '').replace(/[^0-9.]/g, '').split('.')[0]);
+  if (!(min >= 22)) fail('package.json engines.node must require Node >= 22 (supabase-js realtime)');
+  else pass('package.json requires Node >= 22 (supabase-js realtime)');
+  const docker = fs.readFileSync('Dockerfile','utf8');
+  const from = String(docker.match(/^FROM\s+node:(\d+)/m)?.[1] || '');
+  if (!from || Number(from) < 22) fail('the Dockerfile base image is older than Node 22 — the container cannot boot');
+  else pass('Dockerfile base image is Node 22+ (container can boot)');
+  const ci = fs.readFileSync('.github/workflows/ci.yml','utf8');
+  const ver = Number(String(ci.match(/node-version:\s*'?(\d+)/)?.[1] || ''));
+  if (!ver || ver < 22) fail('CI pins a Node older than 22 — the app cannot boot there');
+  else pass('CI runs the app on Node 22+');
+  if (!indexJs.includes('ZAPIT needs Node.js 22 or newer')) fail('index.js has no readable runtime guard');
+  else pass('index.js explains the Node 22 requirement instead of crashing on WebSocket lookup');
+} catch { fail('runtime pinning files missing (Node >= 22)'); }
+
 // validation single-source + migration
 try {
   const v = fs.readFileSync('src/utils/validation.js','utf8');

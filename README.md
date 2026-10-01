@@ -3,7 +3,7 @@
 > **Africa's #1 WhatsApp + Content Automation Platform** — replies to customers, takes orders, and posts viral content to TikTok, Instagram, Facebook & YouTube *while you sleep*. Built for African SMEs, zero tech skills required.
 
 [![CI](https://github.com/zapithub/zapit/actions/workflows/ci.yml/badge.svg)](https://github.com/zapithub/zapit/actions/workflows/ci.yml)
-[![Security: 18/18](https://img.shields.io/badge/security-18%2F18-brightgreen)](#security)
+[![Security: 191/191](https://img.shields.io/badge/security-191%2F191-brightgreen)](#security)
 [![Coverage: 70%](https://img.shields.io/badge/coverage-70%25-yellow)](#testing)
 
 **Live:** Frontend `https://zapit.app` · API `https://zapit-n2yf.onrender.com` · Health `/health`
@@ -11,6 +11,10 @@
 ---
 
 ## 30-second start
+
+**Runtime: Node.js 22 or newer.** The Supabase client pulls in `@supabase/realtime-js`, which needs the
+built-in `WebSocket`; on Node 20 `createClient()` throws `WebSocket not found` and the process dies at
+import. `index.js` now checks this up front and says so, and CI/Docker run Node 22.
 
 ```bash
 git clone https://github.com/zapithub/zapit.git && cd zapit
@@ -114,7 +118,7 @@ Storage bucket `content-media` (private) for uploads.
 
 ```bash
 npm run check              # syntax
-npm run security:check     # 187 security invariants (Phases 1–8.4)
+npm run security:check     # 191 security invariants (Phases 1–8.4)
 npm run generate:pricing   # rebuild public/pricing.json from src/config/plans.js
 npm test                   # unit — 18 suites
 npm run test:integration   # live-server integration (self-skips without one)

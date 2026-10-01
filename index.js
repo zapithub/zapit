@@ -41,6 +41,18 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 const execAsync  = promisify(exec);
 
+// ─── RUNTIME REQUIREMENT ────────────────────────────────────────
+// @supabase/realtime-js (pulled in by supabase-js) needs the built-in WebSocket
+// and therefore Node 22+; on Node 20 `createClient()` throws "WebSocket not
+// found" and the process dies at import with a stack trace that names neither
+// cause nor fix (found by the Phase 8.4 CI proofs). Say it plainly instead.
+const __nodeMajor = Number(String(process.versions.node).split('.')[0]);
+if (Number.isFinite(__nodeMajor) && __nodeMajor < 22) {
+  console.error(`[ENV] ZAPIT needs Node.js 22 or newer — running ${process.version}.`);
+  console.error('      The Supabase realtime client requires the built-in WebSocket (see Dockerfile / .github/workflows/ci.yml).');
+  process.exit(1);
+}
+
 // ─── ENV ────────────────────────────────────────────────────────
 const {
   PORT                = 3000,

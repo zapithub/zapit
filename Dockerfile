@@ -1,6 +1,6 @@
 # ZAPIT — Production Dockerfile (Phase 5)
 # Multi-stage, slim, non-root, healthcheck
-FROM node:20-alpine AS base
+FROM node:22-alpine AS base   # supabase-js' realtime client requires Node >= 22 (built-in WebSocket)
 WORKDIR /app
 
 # Install deps separately for layer cache
