@@ -425,18 +425,51 @@ fixed first — the routing queries themselves could never have worked with it i
 
 ---
 
+## Phase 7.2 — Auth tokens & browser session (S-08, S-09) — Detail
+
+| Task | Finding | Description | Status |
+|------|---------|-------------|--------|
+| 7.2.0 | **S-08** | Access tokens now live **15 minutes** (`ACCESS_TOKEN_TTL`, parsed and clamped to 60 s–1 h by `src/utils/session.js`, so even a mis-set env cannot restore 7 days) and carry a `jti` | ✅ Done |
+| 7.2.1 | **S-08** | `sessions` stores **only sha256 hashes** (`access_token_hash`, `refresh_token_hash`) — a database read no longer yields usable tokens. Authenticate resolves by hash with a legacy-`token` fallback for pre-migration rows | ✅ Done |
+| 7.2.2 | **S-08** | Refresh tokens **rotate on every use**: a new row continues the same `family_id`, the spent row is marked `rotated_at`/`revoked_at`/`replaced_by_hash`. Logout revokes (never silently deletes), change-password revokes siblings, logout-all revokes everything | ✅ Done |
+| 7.2.3 | **S-08** | **Reuse detection:** presenting a spent refresh token — matched by hash *or* by `jti` when the row is gone — revokes the whole family (`REUSE_REASON='refresh_reuse'`), clears cookies, logs a security warning and answers `401`, instead of quietly issuing new tokens | ✅ Done |
+| 7.2.4 | **S-09** | httpOnly cookie path: `zapit_at` (path `/`), `zapit_rt` (path `/auth`, so it is only ever sent to auth endpoints) and a readable `zapit_csrf`; `Secure`/`SameSite`/`Domain` are operator-configurable (`AUTH_COOKIE_*`). Bearer auth for API/mobile is unchanged | ✅ Done |
+| 7.2.5 | **S-09** | Cookie auth is CSRF-protected by double submit: every mutating request must echo `X-CSRF-Token` (timing-safe compare), with `SameSite=Lax` as the second layer; `x-requested-with` is accepted as a fallback | ✅ Done |
+| 7.2.6 | **S-09** | Frontend stops leaking tokens in URLs: `login.html` writes the tab session and redirects to a clean `dashboard.html` (no `?token=`), and the dashboard bootstraps from sessionStorage **or** the httpOnly cookie (`POST /auth/refresh-token` with `credentials:'include'`), so a reload no longer means logout. Every API call sends `credentials:'include'` + the CSRF header | ✅ Done |
+| 7.2.7 | — | `tests/unit/session.test.mjs` (TTL clamps incl. 7d→1 h, hash-at-rest rows, reuse/activity table, migration tolerance, wiring) + `tests/unit/cookies.test.mjs` (serialisation, parsing, CSRF table, cookie profile, no-URL-token wiring); `supabase/migrations/20261008_phase7_02_sessions.sql` (hash columns, family/rotation/revocation, pgcrypto backfill, legacy purge, `prune_sessions(45)`); `security-check` 95 → **107 checks**; `npm test` **12 suites** | ✅ Done |
+
+**Phase 7.2 Exit criteria:** access token ≤ 1 h (default 15 m) — **PASS ✅**; refresh tokens hashed + rotated + reuse-revoked — **PASS ✅**; httpOnly cookie path with CSRF — **PASS ✅**; no tokens in the URL — **PASS ✅**; tests + security checks green — **PASS ✅**.
+
+**Verification (2026-10-01):**
+- `node --check < index.js` — ✅ (4,013 lines); dashboard/login inline scripts extracted and `node --check`ed ✅
+- `npm test` — **12 suites ✅** (…, oauth, **session**, **cookies**, otp)
+- `npm run security:check` — **107/107 ✅** (was 95; +S-08/S-09 groups)
+- Live dev: `POST /auth/refresh-token` without a body → **400**; with a garbage token → **401** (`Invalid or expired refresh token`); `/auth/me` with a bogus `zapit_at` cookie → **401** (cookie path reaches `authenticate`); `GET /auth/me` with no credentials → 401 ✅
+- `grep` invariants: no `expiresIn: '7d'`, no raw session inserts, login.html free of `params.toString()` ✅
+### 2026-10-01 — Phase 7.2 Completed ✅ — Auth tokens & browser session (S-08, S-09)
+- **Phase 7.2 — DONE**
+  - Created `src/utils/session.js` (clamped TTL parsing, token hashing, hashed session rows + legacy fallback, reuse/activity decisions, migration tolerance) and `src/utils/cookies.js` (httpOnly access/refresh cookies, path-scoped refresh, double-submit CSRF, operator-configurable Secure/SameSite/Domain)
+  - Access tokens 15 minutes; refresh tokens rotated per use with family-wide revocation on reuse; sessions store hashes only
+  - `/auth/login`, `/auth/register` and `/auth/refresh-token` set cookies; `/auth/logout(-all)` clear them; cookie auth requires `X-CSRF-Token` on writes
+  - `login.html` no longer puts tokens in the URL; `dashboard.html` bootstraps from the tab session or the cookie and sends `credentials:'include'`
+  - Created `supabase/migrations/20261008_phase7_02_sessions.sql`; tests `session.test.mjs` + `cookies.test.mjs`; `npm test` **12 suites**; `security-check` **107 checks**
+  - **Verification:** `node --check` ✅, `npm test` ✅, `security:check` 107/107 ✅, live 400/401 smoke ✅
+
+
+---
+
 ## Final Summary (2026-10-01)
 
 | Metric | Before | After |
 |--------|--------|-------|
 | Critical findings | 11 | 0 |
 | High findings | 14 | 0 |
-| Security check | — | 95/95 ✅ (Phase 7.1) |
-| Tests | 0 | 10 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth) |
+| Security check | — | 107/107 ✅ (Phase 7.2) |
+| Tests | 0 | 12 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth, session, cookies) |
 | Docs | 2 lines | 150+ lines + 5 docs |
-| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 3,916 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE), modular imports, allowlist, spawn, cache, locks |
+| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 4,013 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE · 7.2 sessions+cookies), modular imports, allowlist, spawn, cache, locks |
 | Frontend | 4× duplicated tokens, hardcode, 45 raw innerHTML | shared.css, pricing.json, DOMPurify+CSP, PWA, a11y focus trap |
-| DB | no migrations | 7 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout, 7.1 OAuth state) + advisory locks |
+| DB | no migrations | 8 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout, 7.1 OAuth state, 7.2 hashed sessions) + advisory locks |
 
 **Next steps for the team:** Run `supabase db push` (apply `20261002`…`20261005`, then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`), set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN`, share `GET /whatsapp/qr-code` route codes with free-plan users, apply `20261007` for 7.1, then continue **Phase 7.2–7.5 (tokens, quotas, amounts, analytics)**, before paid traffic per Phase 0 §A.4. Phases 6.1–6.5 closed — **all P0 audit findings + the 6.5 P1s resolved**. 🎉
 

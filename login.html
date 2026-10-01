@@ -694,9 +694,10 @@ h3, .h3 { font-size: var(--font-size-h3); line-height: var(--line-height-h3); fo
   // to browser storage here. dashboard.html should establish its own secure
   // session handling (e.g. an httpOnly cookie set by your backend) once built.
   var ZAPIT_SESSION = { accessToken: null, refreshToken: null, user: null, pendingEmail: null };
-  // Phase 3: sessionStorage fallback for refresh across reloads (cleared on logout/unload)
-  // Tokens are stored in sessionStorage (tab-scoped, cleared when tab closes) with 7d expiry check.
-  // Prefer httpOnly cookies when backend supports them (see SECURITY.md). This fallback is XSS-mitigated via CSP + DOMPurify.
+  // Phase 7.2 (S-08/S-09): access tokens last 15 minutes and are refreshed silently;
+  // the preferred carrier is the API's httpOnly cookie (set by /auth/login, /auth/register,
+  // /auth/refresh-token — see SECURITY.md). sessionStorage stays as a tab-scoped fallback
+  // for browsers that block the cookie, and never receives the refresh token in cookie mode.
   try {
     var _ssToken = sessionStorage.getItem('zapit_token');
     var _ssRefresh = sessionStorage.getItem('zapit_refresh');
@@ -714,7 +715,8 @@ h3, .h3 { font-size: var(--font-size-h3); line-height: var(--line-height-h3); fo
       if (token) {
         sessionStorage.setItem('zapit_token', token);
         if (refresh) sessionStorage.setItem('zapit_refresh', refresh);
-        sessionStorage.setItem('zapit_expiry', String(Date.now() + 7*24*60*60*1000));
+        // Marker only: the dashboard refreshes a 15-minute access token automatically.
+        sessionStorage.setItem('zapit_expiry', String(Date.now() + 14*60*1000));
       }
     } catch(e) {}
   }
@@ -731,7 +733,8 @@ h3, .h3 { font-size: var(--font-size-h3); line-height: var(--line-height-h3); fo
       res = await fetch(apiUrl(path), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        credentials: 'include'   // S-09: accept the httpOnly session cookies
       });
     } catch (networkErr) {
       var err = new Error("Couldn't reach the server. Check your connection and try again.");
@@ -943,8 +946,8 @@ h3, .h3 { font-size: var(--font-size-h3); line-height: var(--line-height-h3); fo
 
       btn.querySelector('.btn-text').innerHTML = '✓ Logged in!';
       setTimeout(function () {
-        var params = new URLSearchParams({ token: ZAPIT_SESSION.accessToken, refresh: ZAPIT_SESSION.refreshToken || '' });
-        window.location.href = 'dashboard.html?' + params.toString();
+        // S-09: no ?token= in the URL — the dashboard reads the tab session (or the cookie).
+        window.location.href = 'dashboard.html';
       }, 700);
     } catch (err) {
       setButtonLoading(btn, false);
@@ -1195,8 +1198,7 @@ h3, .h3 { font-size: var(--font-size-h3); line-height: var(--line-height-h3); fo
       otpSuccessView.classList.remove('hidden');
       if (resendCooldownTimer) clearInterval(resendCooldownTimer);
       setTimeout(function () {
-        var params = new URLSearchParams({ token: ZAPIT_SESSION.accessToken, refresh: ZAPIT_SESSION.refreshToken || '' });
-        window.location.href = 'dashboard.html?' + params.toString();
+        window.location.href = 'dashboard.html';
       }, 1600);
     } catch (err) {
       setButtonLoading(btn, false);
@@ -1250,8 +1252,7 @@ h3, .h3 { font-size: var(--font-size-h3); line-height: var(--line-height-h3); fo
 
   document.getElementById('skipVerifyBtn').addEventListener('click', function () {
     closeOtpModal();
-    var params = new URLSearchParams({ token: ZAPIT_SESSION.accessToken, refresh: ZAPIT_SESSION.refreshToken || '' });
-    window.location.href = 'dashboard.html?' + params.toString();
+    window.location.href = 'dashboard.html';
   });
 
   otpOverlay.addEventListener('click', function (e) {

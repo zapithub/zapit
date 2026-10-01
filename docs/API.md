@@ -2,7 +2,12 @@
 
 Base: `https://zapit-n2yf.onrender.com` or `http://localhost:3000`
 
-All authenticated routes require `Authorization: Bearer <accessToken>`.
+All authenticated routes accept either `Authorization: Bearer <accessToken>` **or** the
+httpOnly session cookies set by `/auth/login`, `/auth/register` and `/auth/refresh-token`
+(Phase 7.2 — S-09). With cookie auth, every non-GET request must also send
+`X-CSRF-Token` with the value of the readable `zapit_csrf` cookie (double submit);
+`SameSite=Lax` is the second layer. `/auth/refresh-token` reads the refresh token from
+the body **or** the path-scoped `zapit_rt` cookie, so browsers never handle it in JS.
 
 ## Auth (12)
 
@@ -11,6 +16,17 @@ All authenticated routes require `Authorization: Bearer <accessToken>`.
 - `POST /auth/logout` / `/auth/logout-all`
 - `POST /auth/verify-email` / `/auth/resend-otp` / `/auth/forgot-password` / `/auth/reset-password`
 - `GET /auth/me` / `PATCH /auth/update-profile` / `PATCH /auth/change-password` / `POST /auth/refresh-token`
+
+### Session contract (Phase 7.2 — S-08)
+- Access tokens live **15 minutes** (`ACCESS_TOKEN_TTL`, clamped to 1 h) and carry a `jti`.
+- Refresh tokens live 30 days and are **rotated on every use**; only their sha256 hashes are
+  stored, so a leaked database row cannot be replayed.
+- Presenting an already-rotated/revoked refresh token is treated as theft: the whole session
+  family is revoked and the client must log in again (`401 Session revoked…`).
+- `POST /auth/logout` revokes the current session; `/auth/logout-all` revokes every session.
+- `sessions` rows keep `family_id`, `rotated_at`, `revoked_at`, `revoked_reason`; the legacy
+  raw `token`/`refresh_token` columns are backfilled to hashes and emptied by migration
+  `20261008` (the API falls back to the legacy columns until it is applied).
 
 ## Onboarding (8)
 

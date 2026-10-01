@@ -28,6 +28,8 @@ import { verifyMetaSignature, verifyWebhookVerifyToken, claimWebhookEvent } from
 import { generateRouteCode, resolveTenantForInbound, upsertWaCustomerTenant, claimSharedGuidance, resolveSendCreds } from './src/utils/tenantRouting.js';
 import { evaluateCharge, expectedAmountMinor, cancelSubscriptionPlan, reactivateDecision, activationFields, normalizeCycle } from './src/utils/billing.js';
 import { newOAuthState, hashState, newPkcePair, stateDecision, sanitizeProviderError, buildAuthorizeUrl, OAUTH_STATE_TTL_MS } from './src/utils/oauth.js';
+import { ACCESS_TOKEN_TTL, ACCESS_TOKEN_TTL_SEC, hashToken, newFamilyId, newSessionRow, legacySessionRow, isSessionReuse, isSessionActive, isMissingColumnError, REUSE_REASON } from './src/utils/session.js';
+import { AUTH_ACCESS_COOKIE, AUTH_REFRESH_COOKIE, parseCookies, isMutating, csrfMatches, setAuthCookies, clearAuthCookies } from './src/utils/cookies.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -304,28 +306,81 @@ function requestLogger(req, _res, next) {
 
 
 // ─── JWT ────────────────────────────────────────────────────────
-function generateTokens(userId, username) {
-  const accessToken  = jwt.sign({ sub: userId, username, type: 'access', jti: crypto.randomUUID() },  __effectiveJWTSecret,         { expiresIn: '7d'  });
-  const refreshToken = jwt.sign({ sub: userId, type: 'refresh', jti: crypto.randomUUID() },            __effectiveRefreshSecret, { expiresIn: '30d' });
-  return { accessToken, refreshToken };
+function generateTokens(userId, username, familyId) {
+  // S-08: short-lived access token (15 min, env-clamped) + rotating refresh token
+  // bound to a session family so a replayed refresh token can revoke the chain.
+  const accessJti  = crypto.randomUUID();
+  const refreshJti = crypto.randomUUID();
+  const accessToken  = jwt.sign({ sub: userId, username, type: 'access', jti: accessJti },  __effectiveJWTSecret,      { expiresIn: ACCESS_TOKEN_TTL });
+  const refreshToken = jwt.sign({ sub: userId, type: 'refresh', jti: refreshJti, fam: familyId }, __effectiveRefreshSecret, { expiresIn: '30d' });
+  return { accessToken, refreshToken, accessJti, refreshJti, familyId };
+}
+
+/** Create a session row (hashes only) with a graceful pre-migration fallback. */
+async function createSession({ user, req, familyId }) {
+  const fam    = familyId || newFamilyId();
+  const tokens = generateTokens(user.id, user.username, fam);
+  const base   = { userId:user.id, accessToken:tokens.accessToken, refreshToken:tokens.refreshToken, ip:req.ip, userAgent:req.headers['user-agent'] };
+  let { error } = await supabase.from('sessions').insert(newSessionRow({ ...base, accessJti:tokens.accessJti, refreshJti:tokens.refreshJti, familyId:fam }));
+  if (error && isMissingColumnError(error)) {
+    console.warn(JSON.stringify({ level:'warn', msg:'sessions hashed columns missing — apply migration 20261008; using legacy rows', reqId:req.id }));
+    ({ error } = await supabase.from('sessions').insert(legacySessionRow(base)));
+  }
+  if (error) throw new Error(error.message);
+  return { ...tokens, refreshTokenHash: hashToken(tokens.refreshToken), accessTokenHash: hashToken(tokens.accessToken) };
+}
+
+/** S-08 reuse detection: revoke the whole family (or every session) and fail closed. */
+async function revokeFamilyAndFail(res, { familyId, userId } = {}) {
+  const nowIso = new Date().toISOString();
+  try {
+    const patch = { revoked_at:nowIso, revoked_reason:REUSE_REASON };
+    if (familyId) await supabase.from('sessions').update(patch).eq('family_id', familyId);
+    else if (userId) await supabase.from('sessions').update(patch).eq('user_id', userId);
+  } catch (e) { console.warn(JSON.stringify({ level:'warn', msg:'family revoke failed', err:e.message })); }
+  console.warn(JSON.stringify({ level:'warn', msg:'refresh token reuse detected — sessions revoked', userId:userId||null, familyId:familyId||null }));
+  clearAuthCookies(res);
+  return res.status(401).json({ success:false, error:'Session revoked for security reasons. Please log in again.' });
 }
 
 // ─── MIDDLEWARE: AUTH ────────────────────────────────────────────
 async function authenticate(req, res, next) {
   try {
+    // S-09: accept the httpOnly cookie path as well as Bearer tokens. Cookie auth
+    // is CSRF-protected with a double-submit token on every mutating request.
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer '))
+    const bearer     = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
+    const cookies     = parseCookies(req.headers.cookie);
+    const cookieToken = cookies[AUTH_ACCESS_COOKIE] || null;
+    const token       = bearer || cookieToken;
+
+    if (!token)
       return res.status(401).json({ success: false, error: 'No token provided. Please log in.' });
 
-    const token   = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, __effectiveJWTSecret);
+    if (!bearer && isMutating(req.method) && !csrfMatches(req, cookies))
+      return res.status(403).json({ success: false, error: 'CSRF check failed. Reload the page and try again.' });
 
-    const { data: session } = await supabase
+    const decoded = jwt.verify(token, __effectiveJWTSecret);
+    const nowIso  = new Date().toISOString();
+
+    // S-08: sessions store only the sha256 of the access token.
+    let { data: session } = await supabase
       .from('sessions')
-      .select('id, user_id')
-      .eq('token', token)
-      .gt('expires_at', new Date().toISOString())
+      .select('id, user_id, family_id')
+      .eq('access_token_hash', hashToken(token))
+      .gt('expires_at', nowIso)
+      .is('revoked_at', null)
       .single();
+
+    if (!session) {
+      // Pre-7.2 rows (or a database where 20261008 is not applied yet) still use `token`.
+      ({ data: session } = await supabase
+        .from('sessions')
+        .select('id, user_id')
+        .eq('token', token)
+        .gt('expires_at', nowIso)
+        .single());
+    }
 
     if (!session)
       return res.status(401).json({ success: false, error: 'Session expired. Please log in again.' });
@@ -339,8 +394,10 @@ async function authenticate(req, res, next) {
     if (!user || !user.is_active || user.is_suspended)
       return res.status(403).json({ success: false, error: 'Account suspended or deactivated.' });
 
-    req.user  = user;
-    req.token = token;
+    req.user    = user;
+    req.token   = token;
+    req.session = session;
+    req.authVia = bearer ? 'bearer' : 'cookie';
     next();
   } catch (err) {
     if (err.name === 'TokenExpiredError')
@@ -1277,17 +1334,17 @@ app.post('/auth/register', authLimiter, async (req, res) => {
     await supabase.from('otp_verifications').insert({ email:email.toLowerCase(), code:hashOTP(otp), type:'email_verify', expires_at:new Date(Date.now() + OTP_TTL_MS).toISOString() });
     await sendOTPEmail(email.toLowerCase(), otp, 'verify');
 
-    const { accessToken, refreshToken } = generateTokens(user.id, user.username);
-    await supabase.from('sessions').insert({ user_id:user.id, token:accessToken, refresh_token:refreshToken, expires_at:new Date(Date.now()+7*24*60*60*1000).toISOString(), ip_address:req.ip, user_agent:req.headers['user-agent'] });
+    const tokens = await createSession({ user, req });
+    setAuthCookies(res, { ...tokens, accessMaxAge:ACCESS_TOKEN_TTL_SEC });
 
     return res.status(201).json({
       success: true,
       message: 'Account created! Check your email for a verification code.',
       data: {
         user: { id:user.id, email:user.email, username:user.username, full_name:user.full_name, email_verified:false },
-        access_token:  accessToken,
-        refresh_token: refreshToken,
-        expires_in:    604800,
+        access_token:  tokens.accessToken,
+        refresh_token: tokens.refreshToken,
+        expires_in:    ACCESS_TOKEN_TTL_SEC,
       },
     });
   } catch (err) {
@@ -1312,8 +1369,8 @@ app.post('/auth/login', authLimiter, async (req, res) => {
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ success:false, error:'Invalid email or password.' });
 
-    const { accessToken, refreshToken } = generateTokens(user.id, user.username);
-    await supabase.from('sessions').insert({ user_id:user.id, token:accessToken, refresh_token:refreshToken, expires_at:new Date(Date.now()+7*24*60*60*1000).toISOString(), ip_address:req.ip, user_agent:req.headers['user-agent'] });
+    const tokens = await createSession({ user, req });
+    setAuthCookies(res, { ...tokens, accessMaxAge:ACCESS_TOKEN_TTL_SEC });
     await supabase.from('users').update({ last_login:new Date().toISOString() }).eq('id', user.id);
 
     const { plan } = await getUserSubscription(user.id);
@@ -1321,9 +1378,9 @@ app.post('/auth/login', authLimiter, async (req, res) => {
       success: true,
       data: {
         user: { id:user.id, email:user.email, username:user.username, full_name:user.full_name, avatar_url:user.avatar_url, country_code:user.country_code, currency:user.currency, email_verified:user.email_verified, plan },
-        access_token:  accessToken,
-        refresh_token: refreshToken,
-        expires_in:    604800,
+        access_token:  tokens.accessToken,
+        refresh_token: tokens.refreshToken,
+        expires_in:    ACCESS_TOKEN_TTL_SEC,
       },
     });
   } catch (err) {
@@ -1334,13 +1391,25 @@ app.post('/auth/login', authLimiter, async (req, res) => {
 
 // POST /auth/logout
 app.post('/auth/logout', authenticate, async (req, res) => {
-  await supabase.from('sessions').delete().eq('token', req.token);
+  // S-08: revoke (audit trail) when the hashed schema is present, delete otherwise.
+  const nowIso = new Date().toISOString();
+  const revoked = req.session?.id
+    ? await supabase.from('sessions').update({ revoked_at:nowIso, revoked_reason:'logout' }).eq('id', req.session.id)
+    : { error:true };
+  if (revoked.error) {
+    const legacy = await supabase.from('sessions').delete().eq('token', req.token);
+    if (legacy.error) await supabase.from('sessions').update({ revoked_at:nowIso, revoked_reason:'logout' }).eq('access_token_hash', hashToken(req.token));
+  }
+  clearAuthCookies(res);
   return res.json({ success:true, message:'Logged out successfully.' });
 });
 
 // POST /auth/logout-all
 app.post('/auth/logout-all', authenticate, async (req, res) => {
-  await supabase.from('sessions').delete().eq('user_id', req.user.id);
+  const nowIso = new Date().toISOString();
+  const revoked = await supabase.from('sessions').update({ revoked_at:nowIso, revoked_reason:'logout_all' }).eq('user_id', req.user.id);
+  if (revoked.error) await supabase.from('sessions').delete().eq('user_id', req.user.id);
+  clearAuthCookies(res);
   return res.json({ success:true, message:'All sessions terminated.' });
 });
 
@@ -1488,7 +1557,8 @@ app.patch('/auth/change-password', authenticate, async (req, res) => {
     const { data: user } = await supabase.from('users').select('password_hash').eq('id', req.user.id).single();
     if (!(await bcrypt.compare(old_password, user.password_hash))) return res.status(401).json({ success:false, error:'Current password is incorrect.' });
     await supabase.from('users').update({ password_hash:await bcrypt.hash(new_password, 12), updated_at:new Date().toISOString() }).eq('id', req.user.id);
-    await supabase.from('sessions').delete().eq('user_id', req.user.id).neq('token', req.token);
+    const revokeOthers = await supabase.from('sessions').update({ revoked_at:new Date().toISOString(), revoked_reason:'password_change' }).eq('user_id', req.user.id).neq('access_token_hash', hashToken(req.token));
+    if (revokeOthers.error) await supabase.from('sessions').delete().eq('user_id', req.user.id).neq('token', req.token);
     return res.json({ success:true, message:'Password changed successfully.' });
   } catch {
     return res.status(500).json({ success:false, error:'Failed to change password.' });
@@ -1498,17 +1568,44 @@ app.patch('/auth/change-password', authenticate, async (req, res) => {
 // POST /auth/refresh-token
 app.post('/auth/refresh-token', async (req, res) => {
   try {
-    const { refresh_token } = req.body;
-    if (!refresh_token) return res.status(400).json({ success:false, error:'Refresh token is required.' });
-    const decoded = jwt.verify(refresh_token, __effectiveRefreshSecret);
-    const { data: session } = await supabase.from('sessions').select('*').eq('refresh_token', refresh_token).single();
-    if (!session) return res.status(401).json({ success:false, error:'Invalid refresh token.' });
+    const presented = req.body?.refresh_token || parseCookies(req.headers.cookie)[AUTH_REFRESH_COOKIE] || null;
+    if (!presented) return res.status(400).json({ success:false, error:'Refresh token is required.' });
+    const refresh_token = presented;
+
+    let decoded;
+    try { decoded = jwt.verify(refresh_token, __effectiveRefreshSecret); }
+    catch { return res.status(401).json({ success:false, error:'Invalid or expired refresh token.' }); }
+
+    const rtHash = hashToken(refresh_token);
+
+    // 1) hashed row first; the legacy raw column keeps pre-20261008 deployments working
+    let { data: session } = await supabase.from('sessions').select('*').eq('refresh_token_hash', rtHash).single();
+    if (!session) { ({ data: session } = await supabase.from('sessions').select('*').eq('refresh_token', refresh_token).single()); }
+
+    // 2) a spent token means theft — revoke the family, never just refuse this request
+    if (session && isSessionReuse(session)) return revokeFamilyAndFail(res, { familyId:session.family_id, userId:session.user_id });
+    if (!session) {
+      const { data: byJti } = await supabase.from('sessions').select('id, user_id, family_id, revoked_at, rotated_at').eq('refresh_jti', decoded.jti).limit(1);
+      const hit = Array.isArray(byJti) ? byJti[0] : byJti;
+      if (hit && isSessionReuse(hit)) return revokeFamilyAndFail(res, { familyId:hit.family_id, userId:hit.user_id });
+      return res.status(401).json({ success:false, error:'Invalid refresh token.' });
+    }
+    if (!isSessionActive(session)) return res.status(401).json({ success:false, error:'Refresh token expired. Please log in again.' });
+
     const { data: user } = await supabase.from('users').select('id,username,is_active,is_suspended').eq('id', decoded.sub).single();
     if (!user || !user.is_active || user.is_suspended) return res.status(403).json({ success:false, error:'Account not available.' });
-    const { accessToken, refreshToken:newRT } = generateTokens(user.id, user.username);
-    await supabase.from('sessions').update({ token:accessToken, refresh_token:newRT, expires_at:new Date(Date.now()+7*24*60*60*1000).toISOString() }).eq('id', session.id);
-    return res.json({ success:true, data:{ access_token:accessToken, refresh_token:newRT, expires_in:604800 } });
-  } catch {
+
+    // 3) rotate: a fresh row continues the family, the spent row is marked used
+    const tokens = await createSession({ user, req, familyId: session.family_id || decoded.fam || newFamilyId() });
+    const spent  = await supabase.from('sessions').update({
+      rotated_at:new Date().toISOString(), revoked_at:new Date().toISOString(),
+      revoked_reason:'rotated', replaced_by_hash:tokens.refreshTokenHash,
+    }).eq('id', session.id);
+    if (spent.error) await supabase.from('sessions').delete().eq('id', session.id);   // legacy schema: one row per session
+    setAuthCookies(res, { ...tokens, accessMaxAge:ACCESS_TOKEN_TTL_SEC });
+    return res.json({ success:true, data:{ access_token:tokens.accessToken, refresh_token:tokens.refreshToken, expires_in:ACCESS_TOKEN_TTL_SEC } });
+  } catch (err) {
+    console.warn(JSON.stringify({ level:'warn', msg:'refresh failed', err:err.message }));
     return res.status(401).json({ success:false, error:'Invalid or expired refresh token.' });
   }
 });

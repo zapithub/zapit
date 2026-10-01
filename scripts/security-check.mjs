@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ZAPIT — Security smoke check for CI (Phases 1–7.1)
+// ZAPIT — Security smoke check for CI (Phases 1–7.2)
 // Fails (exit 1) if any critical invariant is violated.
 // No external deps, runs on Node 18+.
 
@@ -329,6 +329,58 @@ try {
   else pass('Phase 7.1 migration present (oauth_states, RLS, prune)');
 } catch { fail('Phase 7.1 migration file missing'); }
 
+// ── Phase 7.2 — short-lived access tokens, hashed/rotating sessions, cookie auth ──
+try {
+  const idx = fs.readFileSync('index.js','utf8');
+  if (idx.includes("expiresIn: '7d'")) fail('access tokens still live 7 days (S-08)');
+  else if (!idx.includes('expiresIn: ACCESS_TOKEN_TTL')) fail('access-token TTL is not configurable/clamped (S-08)');
+  else pass('Access tokens use the clamped 15-minute TTL (S-08)');
+  if (/sessions'\)\.insert\(\{/.test(idx)) fail('a session insert bypasses the hashed row factory (S-08)');
+  else pass('Sessions are only created through newSessionRow (hashes) (S-08)');
+  if (!idx.includes(".eq('access_token_hash', hashToken(token))")) fail('authenticate does not look up sessions by hash (S-08)');
+  else pass('Authenticate resolves sessions by access-token hash (S-08)');
+  if (!idx.includes(".eq('refresh_token_hash', rtHash)")) fail('refresh does not look up sessions by hash (S-08)');
+  else pass('Refresh resolves sessions by refresh-token hash (S-08)');
+  if (!idx.includes("revoked_reason:'rotated'") || !idx.includes('replaced_by_hash'))
+    fail('refresh tokens are not rotated (S-08)');
+  else pass('Refresh tokens rotate on every use (S-08)');
+  if (!idx.includes('isSessionReuse(session)') || !idx.includes('revokeFamilyAndFail'))
+    fail('refresh-token reuse does not revoke the family (S-08)');
+  else pass('Refresh-token reuse revokes the session family (S-08)');
+  if (!idx.includes('parseCookies(req.headers.cookie)') || !idx.includes('setAuthCookies(res,') || !idx.includes('clearAuthCookies(res)'))
+    fail('httpOnly cookie path is incomplete (S-09)');
+  else pass('httpOnly cookie login/refresh/logout path present (S-09)');
+  if (!idx.includes('csrfMatches(req, cookies)') || !idx.includes('isMutating(req.method)'))
+    fail('cookie auth has no CSRF protection (S-09)');
+  else pass('Cookie auth enforces double-submit CSRF on writes (S-09)');
+} catch { fail('index.js missing for session checks'); }
+try {
+  const sess = fs.readFileSync('src/utils/session.js','utf8');
+  for (const fn of ['parseTtlSeconds','hashToken','newFamilyId','newSessionRow','legacySessionRow','isSessionReuse','isSessionActive','isMissingColumnError'])
+    if (!sess.includes(`export function ${fn}`)) fail(`session util lacks ${fn} (S-08)`);
+  if (!sess.includes('ACCESS_TOKEN_MAX_SEC   = 3600')) fail('session util does not clamp the access TTL (S-08)');
+  else pass('Session util exposes the S-08 toolkit with a 1-hour maximum TTL');
+  const ck = fs.readFileSync('src/utils/cookies.js','utf8');
+  for (const fn of ['parseCookies','csrfMatches','setAuthCookies','clearAuthCookies','serializeCookie','authCookieHeaders'])
+    if (!ck.includes(`export function ${fn}`)) fail(`cookie util lacks ${fn} (S-09)`);
+  if (!ck.includes('HttpOnly') || !ck.includes('REFRESH_COOKIE_PATH = \'/auth\'')) fail('cookie util does not scope httpOnly cookies (S-09)');
+  else pass('Cookie util scopes httpOnly auth cookies and CSRF (S-09)');
+  const mig = fs.readFileSync('supabase/migrations/20261008_phase7_02_sessions.sql','utf8');
+  if (!mig.includes('access_token_hash') || !mig.includes('refresh_token_hash') || !mig.includes('family_id'))
+    fail('Phase 7.2 migration lacks hashed session columns');
+  else if (!mig.includes('token = NULL') || !mig.includes('prune_sessions'))
+    fail('Phase 7.2 migration lacks legacy purge / housekeeping');
+  else pass('Phase 7.2 migration present (hashes, family, purge, prune)');
+} catch { fail('session/cookie util or migration missing (S-08/S-09)'); }
+try {
+  const login = fs.readFileSync('login.html','utf8');
+  const dash  = fs.readFileSync('dashboard.html','utf8');
+  if (login.includes('params.toString()') || /dashboard\.html\?/.test(login)) fail('login still hands tokens over in the URL (S-09)');
+  else if (!dash.includes("credentials: 'include'") || !dash.includes("h['X-CSRF-Token'] = csrf"))
+    fail('dashboard does not use the cookie + CSRF path (S-09)');
+  else pass('Browser hosts use the URL-free cookie path with CSRF (S-09)');
+} catch { fail('frontend files missing for S-09 checks'); }
+
 // validation single-source + migration
 try {
   const v = fs.readFileSync('src/utils/validation.js','utf8');
@@ -343,8 +395,8 @@ try {
 
 console.log('');
 if (fails) {
-  console.error(`\n${fails} check(s) failed — Phase 7.1 hardening not done.`);
+  console.error(`\n${fails} check(s) failed — Phase 7.2 hardening not done.`);
   process.exit(1);
 } else {
-  console.log('All security checks passed (Phases 1–7.1). ✅');
+  console.log('All security checks passed (Phases 1–7.2). ✅');
 }

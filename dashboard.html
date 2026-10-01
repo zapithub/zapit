@@ -828,14 +828,43 @@ table.data-table tbody tr.clickable { cursor: pointer; }
   /* ════════════════════════════════════════════════════════
      API CLIENT — with silent 401 refresh-and-retry
      ════════════════════════════════════════════════════════ */
+  function csrfFromCookie() {
+    var m = document.cookie.match(/(?:^|;\s*)zapit_csrf=([^;]+)/);
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+  function cookieAuthAvailable() {
+    return /(?:^|;\s*)zapit_csrf=/.test(document.cookie);
+  }
+  // S-08/S-09: 15-minute access tokens; the refresh token is kept in memory or in
+  // the httpOnly cookie (never both persisted when cookie mode is available).
+  function persistTokens(token, refresh) {
+    ZAPIT.state.token = token || null;
+    ZAPIT.state.refreshToken = refresh || null;
+    try {
+      if (token) {
+        sessionStorage.setItem('zapit_token', token);
+        sessionStorage.setItem('zapit_expiry', String(Date.now() + 14 * 60 * 1000));
+        if (refresh && !cookieAuthAvailable()) sessionStorage.setItem('zapit_refresh', refresh);
+        else sessionStorage.removeItem('zapit_refresh');
+      }
+    } catch (e) {}
+  }
+  function clearTokens() {
+    ZAPIT.state.token = null;
+    ZAPIT.state.refreshToken = null;
+    try { sessionStorage.removeItem('zapit_token'); sessionStorage.removeItem('zapit_refresh'); sessionStorage.removeItem('zapit_expiry'); } catch (e) {}
+  }
+
   function buildHeaders() {
     var h = { 'Content-Type': 'application/json' };
     if (ZAPIT.state.token) h['Authorization'] = 'Bearer ' + ZAPIT.state.token;
+    var csrf = csrfFromCookie();
+    if (csrf) h['X-CSRF-Token'] = csrf;   // S-09 double-submit for cookie auth
     return h;
   }
 
   async function rawFetch(method, path, body) {
-    var opts = { method: method, headers: buildHeaders() };
+    var opts = { method: method, headers: buildHeaders(), credentials: 'include' };
     if (body !== undefined && body !== null) opts.body = JSON.stringify(body);
     try {
       return await fetch(apiUrl(path), opts);
@@ -849,19 +878,16 @@ table.data-table tbody tr.clickable { cursor: pointer; }
   var isRefreshing = false;
 
   async function tryRefreshToken() {
-    if (!ZAPIT.state.refreshToken) return false;
     try {
-      var res = await fetch(apiUrl('/auth/refresh-token'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: ZAPIT.state.refreshToken })
-      });
+      var opts = { method: 'POST', headers: buildHeaders(), credentials: 'include' };
+      if (ZAPIT.state.refreshToken) opts.body = JSON.stringify({ refresh_token: ZAPIT.state.refreshToken });
+      var res = await fetch(apiUrl('/auth/refresh-token'), opts);
       var data = await res.json().catch(function () { return null; });
       if (res.ok && data && data.success && data.data) {
-        ZAPIT.state.token = data.data.access_token;
-        ZAPIT.state.refreshToken = data.data.refresh_token;
+        persistTokens(data.data.access_token, data.data.refresh_token);
         return true;
       }
+      clearTokens();
     } catch (e) { /* fall through to false */ }
     return false;
   }
@@ -930,19 +956,30 @@ table.data-table tbody tr.clickable { cursor: pointer; }
     appShell.style.display = 'flex';
   }
 
-  function bootstrapSession() {
+  async function bootstrapSession() {
+    // 1) Legacy ?token= hand-off (kept for old links only) — scrubbed immediately.
     var params = new URLSearchParams(window.location.search);
     var token = params.get('token');
     var refresh = params.get('refresh');
     if (token) {
-      ZAPIT.state.token = token;
-      ZAPIT.state.refreshToken = refresh || null;
-      // Scrub tokens from the visible URL/history immediately
+      persistTokens(token, refresh || null);
       var cleanUrl = window.location.pathname + window.location.hash;
       window.history.replaceState({}, document.title, cleanUrl);
       return true;
     }
-    return !!ZAPIT.state.token;
+    // 2) Tab session: survives a reload without ever putting tokens in the URL.
+    try {
+      var ssToken = sessionStorage.getItem('zapit_token');
+      var ssExpiry = Number(sessionStorage.getItem('zapit_expiry') || 0);
+      if (ssToken && (!ssExpiry || Date.now() < ssExpiry)) {
+        ZAPIT.state.token = ssToken;
+        ZAPIT.state.refreshToken = sessionStorage.getItem('zapit_refresh');
+        return true;
+      }
+    } catch (e) {}
+    // 3) httpOnly cookie session (S-09): rotate one fresh access token, no URL secret.
+    if (await tryRefreshToken()) return true;
+    return false;
   }
 
   /* ════════════════════════════════════════════════════════
@@ -1441,6 +1478,7 @@ table.data-table tbody tr.clickable { cursor: pointer; }
     try {
       await apiPost(everywhere ? '/auth/logout-all' : '/auth/logout', {});
     } catch (e) { /* proceed to redirect regardless */ }
+    clearTokens();
     window.location.href = 'login.html';
   }
   document.getElementById('logoutBtn').addEventListener('click', function () { confirmDialog({ title: 'Log out?', message: 'You can log back in anytime.', confirmLabel: 'Log Out', onConfirm: function () { doLogout(false); } }); });
@@ -1558,7 +1596,7 @@ table.data-table tbody tr.clickable { cursor: pointer; }
      BOOTSTRAP / INIT SEQUENCE
      ════════════════════════════════════════════════════════ */
   async function init() {
-    var hasToken = bootstrapSession();
+    var hasToken = await bootstrapSession();
     if (!hasToken) { showAuthGate('none'); return; }
 
     try {
@@ -1698,9 +1736,11 @@ table.data-table tbody tr.clickable { cursor: pointer; }
   async function apiPostFormData(path, formData) {
     var headers = {};
     if (ZAPIT.state.token) headers['Authorization'] = 'Bearer ' + ZAPIT.state.token;
+    var csrf = csrfFromCookie();
+    if (csrf) headers['X-CSRF-Token'] = csrf;
     var res;
     try {
-      res = await fetch(apiUrl(path), { method: 'POST', headers: headers, body: formData });
+      res = await fetch(apiUrl(path), { method: 'POST', headers: headers, body: formData, credentials: 'include' });
     } catch (e) {
       throw new Error("Couldn't reach the server. Check your connection and try again.");
     }
@@ -1818,7 +1858,7 @@ table.data-table tbody tr.clickable { cursor: pointer; }
     // Token-protected download: fetch as blob then trigger save, since a plain link can't send Authorization headers.
     showToast('Preparing your export…', 'info');
     api('GET', '/whatsapp/products/export').catch(function () {}); // no-op fallback if direct nav unsupported
-    fetch(url, { headers: { Authorization: 'Bearer ' + ZAPIT.state.token } })
+    fetch(url, { headers: buildHeaders(), credentials: 'include' })
       .then(function (res) { return res.blob(); })
       .then(function (blob) {
         var link = document.createElement('a');
@@ -3249,7 +3289,7 @@ table.data-table tbody tr.clickable { cursor: pointer; }
 
   function exportAnalytics() {
     showToast('Preparing your export…', 'info');
-    fetch(apiUrl('/analytics/export'), { headers: { Authorization: 'Bearer ' + ZAPIT.state.token } })
+    fetch(apiUrl('/analytics/export'), { headers: buildHeaders(), credentials: 'include' })
       .then(function (res) { return res.blob(); })
       .then(function (blob) {
         var link = document.createElement('a');
