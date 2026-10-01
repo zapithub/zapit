@@ -1,6 +1,6 @@
 # ZAPIT — Phase 0 Master Audit → Tracker (New Attachment)
 **Source:** `ZAPIT — Master Codebase Audit, Architecture Review & World-Class Upgrade Blueprint` (30 Sep 2026, Phase 0, no code modified) — pasted by user 2026-10-01  
-**Current codebase:** `arena/01a0f67b-zapit` after Phases 1–5 + **6.1–6.5** (47 findings → 0 Critical, plus new audit: S-01/S-02/S-05/S-06/S-13/S-15/S-16/S-22/W-07 + **W-14 (new)** all FIXED, `npm test` 9 suites + `security:check` 84/84 + live E2E)  
+**Current codebase:** `arena/01a0f67b-zapit` after Phases 1–5 + **6.1–6.5 + 7.1** (47 findings → 0 Critical, plus new audit: S-01/S-02/S-05/S-06/S-07/S-13/S-15/S-16/S-22/W-07 + **W-14 (new)** all FIXED, `npm test` 10 suites + `security:check` 95/95 + live E2E)  
 **Rule:** Do in phases, report Done vs Pending, no shortcut, finish stage before next. This file is the single source of truth for the **NEW** audit.
 
 > **Evidence labels per §0.1:** FACT/OBSERVATION/RISK/RECOMMENDATION as in Phase 0. Priorities P0/P1/P2/P3 as in §12.
@@ -43,7 +43,7 @@ Our prior `CONSULTANT_REVIEW.md` (47 findings) covered security, architecture, f
 | **W-07** | Platform-credential fallback → spam via platform number | **P0** | S | ✅ **FIXED 6.1** — `sendWAMessage` strict tenant (no fallback, throw), 7 call sites patched; explicit shared channel added 6.3 | **DONE 6.1 + 6.3** |
 | **W-14** | *(new, found in 6.3 analysis)* `.catch()` on Supabase v2 builders is not a function — 43 sites, webhook dead on arrival | **P0** | S | ✅ **FIXED 6.3** — all 43 removed/converted, 0 remain, enforced by `security:check` | **DONE 6.3** |
 | **S-22** | `select('*')` leaks `password_hash` via `/admin/users/:id` + `update-profile` | **P0/H** | S | ✅ **FIXED 6.1** — `SAFE_USER_SELECT` DTO + `users_safe` view, `sanitizeUserDto` | **DONE 6.1** |
-| **S-07** | OAuth `state` unsigned, no nonce/expiry | P1 | S | 🔴 OPEN | Phase 7 |
+| **S-07** | OAuth `state` unsigned, no nonce/expiry | P1 | S | ✅ **FIXED 7.1** — opaque CSPRNG state stored hashed + single-use + 10-min expiry, bound to user/platform/redirect; identity from the DB row; **PKCE S256** on Meta/TikTok/Google; unit + security checks | **DONE 7.1** |
 | **S-08** | JWT 7d + raw `sessions` + no reuse detection | P1 | M | 🟡 PARTIAL — added `jti`, still 7d/30d, still raw at rest | Phase 7 |
 | **S-09** | Tokens in URL `?token=` → logs/CDN, reload=logout | P1 | M | 🟡 PARTIAL — sessionStorage + scrub, still URL handoff; needs httpOnly cookie/code exchange | Phase 7 |
 | **S-10** | Open CORS (`cb(null,true)`) + CSP disabled | P1 | S–M | ✅ FIXED Phase 1 (allowlist, HSTS) — CSP meta added Phase 3, still `unsafe-inline` (needs split) |
@@ -85,6 +85,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 | **6.3** | **P0 — Tenant Routing & Shared-Mode Safety** | S-06, partial W-04, **W-14 (new)** | P0 | M | ✅ **DONE 2026-10-01** — discriminator `#CODE` + sticky `wa_customer_tenant`; UNIQUE(wa_phone_number_id) for individual + UNIQUE route codes; notebook test: 2 shared tenants, no code → **no tenant**, `#CODE` → correct one; **plus W-14**: 43 broken `.catch` on Supabase builders fixed (0 remain) |
 | **6.4** | **P0 — Billing Free-Grant Kill** | B-01, B-02, B-04, B-07 | P0 | S–M | ✅ **DONE 2026-10-01** — 71 security checks, 8 test suites, live E2E (401 / 400 / acked-but-refused bogus charge); migration `20261005` |
 | **6.5** | **P0/P1 — Data Leak & Injection Hardening** | S-22, S-16, S-03 follow-up, S-15 OTP, S-13 XFF | P0/P1 | M | ✅ **DONE 2026-10-01** — `pickFields` allow-lists, `crypto.randomInt` + lockout, `req.ip` for location, login DTO; migration `20261006`; 9 suites, 84/84 checks |
+| **7.1** | **P1 — Social OAuth State & PKCE** | S-07 | P1 | S | ✅ **DONE 2026-10-01** — `oauth_states` (hashed, single-use, 10-min TTL, user/platform/redirect-bound), identity from the DB row, PKCE S256 on every provider, sanitised provider errors; migration `20261007`; 10 suites, 95/95 checks |
 | **7** | **P1 — Auth, Quotas, Money Correctness** | S-07, S-08, S-09, S-14, B-05, B-06, B-09, D-05, S-15/16/17, S-12 follow-up | P1 | L | OAuth nonce+PKCE, JWT 15m + hashed refresh, httpOnly cookie path documented, Paystack amount matrix, usage_counters + middleware, reset cron filtered, analytics `count` not truncated |
 | **8** | **P1 — Core Loop: Orders & Payments in Chat** | W-01, W-02, W-03 (templates), W-04 (dedup), W-07 done, N-1/N-2 | P1 | XL | Customer can type quantity/address → order row + `generateOrderNumber` + Paystack link/bank ref → webhook marks `paid` → confirmation; welcome bug fixed; STOP handled; human takeover flag |
 | **9** | **P1 — Rebuild Social Publishing** | C-01–C-08, P1 | L | Rebuild publishing layer in worker: correct Page/IG ids, long-lived token exchange, refresh job, YouTube multipart, lease-based scheduler (no 5-min window) |
@@ -102,7 +103,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 
 **PENDING (must still do, in order):**
 - **Phase 6.5 DONE:** S-13, S-15, S-16, S-22 — **all P0 + 6.5 P1s closed** (S-06 in 6.3, B-01/B-02/B-04/B-07 in 6.4, S-05 in 6.2, S-01/S-22/W-07 in 6.1)
-- **Phase 7:** S-07, S-08, S-09, B-05/B-06/B-09, D-05, etc. (S-14 closed in 6.4; S-13/S-15/S-16 closed in 6.5)
+- **Phase 7.2–7.5:** S-08/S-09 (JWT 15 m + hashed refresh, httpOnly cookie path), B-06/B-09 (usage_counters + filtered reset), B-05 (Paystack amount matrix), D-05 (analytics truncation) — S-07 closed in 7.1; S-14 closed in 6.4; S-13/S-15/S-16 closed in 6.5
 - **Phase 8:** W-01 core loop (largest), W-02–W-04, N-1/N-2
 - **Phase 9:** C-01–C-08 rebuild
 - **Phase 10:** U-01–U-18, NDPA
@@ -208,3 +209,18 @@ entirely requires the Phase 7 auth rework (soft-accept + owner notification + CA
 - `npm test` (7 suites) + `npm run security:check` (55/55) + `node --check` + live E2E green — **PASS ✅ (2026-10-01)**
 
 **DONE 6.3:** S-06, W-14. **Pending after 6.3:** 6.4 (B-01 free-grant), 6.5 (S-16/S-15 OTP/XFF polish) → then Phase 7.
+
+
+## 5d. Phase 7.1 — Exit criteria & evidence (DONE 2026-10-01)
+
+**Deliverables:** `src/utils/oauth.js` (CSPRNG state, sha256 hash, PKCE S256 pair + known-answer helper, `stateDecision`, `sanitizeProviderError`, `buildAuthorizeUrl`), `index.js` (`SOCIAL_PROVIDERS` config, connect route stores hashed state + challenge, callback redeems once + verifier on all exchanges), `supabase/migrations/20261007_phase7_01_oauth_state.sql` (hash UNIQUE, used_at, expires_at, RLS, `prune_oauth_states`), `tests/unit/oauth.test.mjs`, `scripts/security-check.mjs` 84 → 95, `docs/API.md`.
+
+**Exit criteria (tracker L88, S-07 slice):**
+- `state` is not client-trusted — **PASS ✅** (opaque handle; `Buffer.from(JSON.stringify({ user_id…` and `stateData.user_id` are gone and CI-asserted absent)
+- state is signed/stored server-side + expires — **PASS ✅** (sha256 UNIQUE, 10-minute TTL, `unknown→used→platform_mismatch→expired` rejected before any provider call)
+- nonce/replay protection — **PASS ✅** (single-use redemption via `.is('used_at', null)`; `used` is checked before `expired`, so replays never win)
+- PKCE — **PASS ✅** (S256 challenge on all four authorize URLs; verifier forwarded on the Facebook, TikTok and Google token exchanges; RFC 7636 appendix-B known-answer test)
+- no identity in the URL / no raw provider-error reflection — **PASS ✅**
+- `npm test` (10 suites) + `npm run security:check` (95/95) + `node --check` green — **PASS ✅ (2026-10-01)**
+
+**DONE 7.1:** S-07. **Pending in Phase 7:** 7.2 S-08/S-09 (tokens), 7.3 B-06/B-09 (usage counters + filtered reset), 7.4 B-05 (amount matrix), 7.5 D-05 (analytics truncation) → 8 (core loop) → 9 (social) → 10 (UX/NDPA).

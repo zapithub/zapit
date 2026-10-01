@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ZAPIT — Security smoke check for CI (Phases 1–6.5)
+// ZAPIT — Security smoke check for CI (Phases 1–7.1)
 // Fails (exit 1) if any critical invariant is violated.
 // No external deps, runs on Node 18+.
 
@@ -290,6 +290,45 @@ else pass('Client IP resolution uses req.ip with private-range handling (S-13)')
 if (!indexJs.includes("process.env.TRUST_PROXY")) fail('proxy trust is not operator-configurable (S-13)');
 else pass('Proxy trust is configurable via TRUST_PROXY (S-13)');
 
+// ── Phase 7.1 — OAuth state is a single-use server-side handle + PKCE (S-07) ──
+try {
+  const idx = fs.readFileSync('index.js','utf8');
+  if (idx.includes('Buffer.from(JSON.stringify({ user_id') || idx.includes('stateData.user_id'))
+    fail('OAuth state still travels as a client-trusted blob (S-07)');
+  else pass('OAuth state carries no client-trusted identity (S-07)');
+  if (!idx.includes('state_hash:hashState(state)')) fail('OAuth state is not stored hashed (S-07)');
+  else pass('OAuth state is stored hashed (S-07)');
+  if (!idx.includes(".eq('state_hash', hashState(String(state)))")) fail('callback does not resolve the state by hash (S-07)');
+  else pass('Callback resolves the state by hash (S-07)');
+  if (!idx.includes(".is('used_at', null)")) fail('OAuth state is not single-use (S-07)');
+  else pass('OAuth state redemption is single-use (S-07)');
+  if (!idx.includes('stateDecision({ record: stateRow, platform })')) fail('OAuth state has no central decision point (S-07)');
+  else pass('OAuth state has a central decision point (S-07)');
+  if (!idx.includes('buildAuthorizeUrl')) fail('authorize URLs are not built by the shared helper (S-07)');
+  else pass('Authorize URLs are built by the shared helper (S-07)');
+  if (!idx.includes('sanitizeProviderError')) fail('provider error strings are not sanitised (S-07)');
+  else pass('Provider error strings are sanitised (S-07)');
+  if (!idx.includes('pkceParam') || !idx.includes('ttBody.code_verifier') || !idx.includes('ytBody.code_verifier'))
+    fail('PKCE verifier is not forwarded to every provider token exchange (S-07)');
+  else pass('PKCE verifier is forwarded on all token exchanges (S-07)');
+} catch { fail('index.js missing for OAuth checks'); }
+try {
+  const o = fs.readFileSync('src/utils/oauth.js','utf8');
+  for (const fn of ['newOAuthState','hashState','newPkcePair','pkceChallengeFor','stateDecision','sanitizeProviderError','buildAuthorizeUrl'])
+    if (!o.includes(`export function ${fn}`)) fail(`oauth util lacks ${fn} (S-07)`);
+  if (!o.includes('randomBytes(OAUTH_STATE_BYTES)')) fail('OAuth state is not CSPRNG-derived (S-07)');
+  else pass('OAuth util exposes the full S-07 toolkit');
+  if (!/OAUTH_STATE_TTL_MS = 10 \* 60 \* 1000/.test(o)) fail('OAuth state TTL is not the 10-minute window');
+  else pass('OAuth state TTL is bounded to 10 minutes (S-07)');
+} catch { fail('src/utils/oauth.js missing (S-07)'); }
+try {
+  const mig = fs.readFileSync('supabase/migrations/20261007_phase7_01_oauth_state.sql','utf8');
+  if (!mig.includes('state_hash') || !mig.includes('UNIQUE')) fail('Phase 7.1 migration lacks unique state hashes');
+  else if (!mig.includes('used_at') || !mig.includes('expires_at')) fail('Phase 7.1 migration lacks single-use + expiry');
+  else if (!mig.includes('ENABLE ROW LEVEL SECURITY') || !mig.includes('prune_oauth_states')) fail('Phase 7.1 migration lacks RLS / housekeeping');
+  else pass('Phase 7.1 migration present (oauth_states, RLS, prune)');
+} catch { fail('Phase 7.1 migration file missing'); }
+
 // validation single-source + migration
 try {
   const v = fs.readFileSync('src/utils/validation.js','utf8');
@@ -304,8 +343,8 @@ try {
 
 console.log('');
 if (fails) {
-  console.error(`\n${fails} check(s) failed — Phase 6.5 not done.`);
+  console.error(`\n${fails} check(s) failed — Phase 7.1 hardening not done.`);
   process.exit(1);
 } else {
-  console.log('All security checks passed (Phases 1–6.5). ✅');
+  console.log('All security checks passed (Phases 1–7.1). ✅');
 }

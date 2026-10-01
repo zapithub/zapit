@@ -393,20 +393,52 @@ fixed first — the routing queries themselves could never have worked with it i
 
 ---
 
+## Phase 7.1 — Social OAuth: single-use state + PKCE (S-07) — Detail
+
+| Task | Finding | Description | Status |
+|------|---------|-------------|--------|
+| 7.1.0 | **S-07** | `state` is no longer a base64 blob holding `user_id`. It is a 256-bit CSPRNG handle; only `sha256(state)` is persisted (`oauth_states.state_hash`, UNIQUE), bound to the authenticated user, platform and redirect URI, expiring after 10 minutes | ✅ Done |
+| 7.1.1 | **S-07** | Single-use redemption: the callback resolves the state by hash and flips `used_at` **conditionally** (`.is('used_at', null)`), so the first callback wins and replays fail with `state_used`; `stateDecision()` rejects `unknown → used → platform_mismatch → expired` before any provider call | ✅ Done |
+| 7.1.2 | **S-07** | PKCE (RFC 7636, S256) on every provider: 32-byte verifier (encrypted at rest), `code_challenge`/`code_challenge_method=S256` on the authorize URL, verifier sent on the Facebook, TikTok and Google token exchanges | ✅ Done |
+| 7.1.3 | **S-07** | Identity is taken from the stored state row (`stateRow.user_id`), never from the callback URL; provider error strings are sanitised before being reflected into the redirect; `?error=` values are allowlist-shaped | ✅ Done |
+| 7.1.4 | — | Provider config centralised in `SOCIAL_PROVIDERS`: unconfigured platform → `400` (clear message) instead of a broken redirect to a provider with an empty `client_id`; state store missing → `503` (never a fallback to trusting client state) | ✅ Done |
+| 7.1.5 | — | Migration `20261007_phase7_01_oauth_state.sql`: `oauth_states` (hash UNIQUE, verifier, redirect, expiry, `used_at`), indexes, RLS service-only, `prune_oauth_states(1)` | ✅ Done |
+| 7.1.6 | — | Tests `tests/unit/oauth.test.mjs` (7 groups: state entropy/opacity, hash one-way, RFC 7636 known-answer + rotation, full state decision table incl. used-beats-expired, error sanitisation, all four authorize URLs carry state+PKCE and no identity, index.js/migration wiring); `security-check` 84 → **95 checks**; `npm test` **10 suites** | ✅ Done |
+
+**Phase 7.1 Exit criteria:** no client-trusted `state`; single-use + expiry enforced; PKCE S256 on all four providers; identity from the DB row; tests + security checks green. — **PASSED ✅**
+
+**Verification (2026-10-01):**
+- `node --check < index.js` — ✅ (3,916 lines)
+- `npm test` — **10 suites ✅** (…, billing, otp, **oauth**)
+- `npm run security:check` — **95/95 ✅** (was 84; +S-07 group)
+- Live dev: unauthenticated `POST /social/connect/youtube` → **401**; `GET /social/callback/youtube?error=javascript:alert(1)` → 302 with `error=provider_javascriptalert1` (sanitised, no reflected payload); `?code=x&state=y` with no DB → 302 `error=state_unknown` (fails closed, no crash) ✅
+- `grep` invariants: no `Buffer.from(JSON.stringify({ user_id`, no `stateData.user_id`, 0 fetches of a state that is not hash-resolved ✅
+### 2026-10-01 — Phase 7.1 Completed ✅ — Social OAuth single-use state + PKCE (S-07)
+- **Phase 7.1 — DONE** (first slice of Phase 7)
+  - Created `src/utils/oauth.js` (opaque state, sha256 hashing, PKCE S256 pair, `stateDecision`, provider-error sanitiser, authorize-URL builder)
+  - `/social/connect/:platform` stores a hashed, user+platform+redirect-bound state with a 10-minute TTL and sends `code_challenge` (S256) to Meta/TikTok/Google; unconfigured provider → 400, missing state store → 503
+  - `/social/callback/:platform` resolves the state by hash, rejects unknown/used/expired/mismatched states before any exchange, redeems it exactly once, takes the user from the stored row and forwards the PKCE verifier on all three token exchanges
+  - Created `supabase/migrations/20261007_phase7_01_oauth_state.sql` (`oauth_states`, RLS, `prune_oauth_states`)
+  - Created `tests/unit/oauth.test.mjs`; `npm test` **10 suites**; `security-check` **95 checks**; docs/API.md updated
+  - **Verification:** `node --check` ✅, `npm test` ✅, `security:check` 95/95 ✅, live redirect/401 smoke ✅
+
+
+---
+
 ## Final Summary (2026-10-01)
 
 | Metric | Before | After |
 |--------|--------|-------|
 | Critical findings | 11 | 0 |
 | High findings | 14 | 0 |
-| Security check | — | 84/84 ✅ (Phase 6.5) |
-| Tests | 0 | 9 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp) |
+| Security check | — | 95/95 ✅ (Phase 7.1) |
+| Tests | 0 | 10 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth) |
 | Docs | 2 lines | 150+ lines + 5 docs |
-| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 3,878 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF), modular imports, allowlist, spawn, cache, locks |
+| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 3,916 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE), modular imports, allowlist, spawn, cache, locks |
 | Frontend | 4× duplicated tokens, hardcode, 45 raw innerHTML | shared.css, pricing.json, DOMPurify+CSP, PWA, a11y focus trap |
-| DB | no migrations | 6 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout) + advisory locks |
+| DB | no migrations | 7 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout, 7.1 OAuth state) + advisory locks |
 
-**Next steps for the team:** Run `supabase db push` (apply `20261002`…`20261005`, then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`), set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN`, share `GET /whatsapp/qr-code` route codes with free-plan users, then continue **Phase 7 (auth, quotas, money correctness)**, before paid traffic per Phase 0 §A.4. Phases 6.1–6.5 closed — **all P0 audit findings + the 6.5 P1s resolved**. 🎉
+**Next steps for the team:** Run `supabase db push` (apply `20261002`…`20261005`, then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`), set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN`, share `GET /whatsapp/qr-code` route codes with free-plan users, apply `20261007` for 7.1, then continue **Phase 7.2–7.5 (tokens, quotas, amounts, analytics)**, before paid traffic per Phase 0 §A.4. Phases 6.1–6.5 closed — **all P0 audit findings + the 6.5 P1s resolved**. 🎉
 
 ---
 

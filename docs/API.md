@@ -90,6 +90,16 @@ Plans: `free`, `creator`, `growth`, `agency` (`src/config/plans.js`). Prices are
   `transactions` (UNIQUE `paystack_reference`, append-only trigger); mismatches are logged at
   `level:"error"` and grant nothing.
 
+## Social OAuth connect (Phase 7.1 — S-07)
+
+| Endpoint | Auth | Behaviour |
+|----------|------|-----------|
+| `POST /social/connect/:platform` | Bearer | `platform` ∈ instagram, facebook, tiktok, youtube. Requires the provider's client id/secret on the server (else `400`), stores a **single-use state handle** (sha256 only) bound to the user + platform + redirect URI with a **10-minute expiry**, and returns `{ auth_url, platform, expires_in, pkce:'S256' }`. `503` when the state store (migration `20261007`) is missing. |
+| `GET /social/callback/:platform` | none | Redeems the state: unknown/replayed/expired/platform-mismatched states are rejected before any token exchange (`?error=state_unknown\|state_used\|state_expired\|state_platform_mismatch`). Identity comes from the stored row — never from the URL. The PKCE verifier is sent on every provider token exchange. Provider errors are sanitised (`?error=provider_<reason>`). |
+
+Notes: the old base64 `{ user_id, platform, ts }` state is gone; a callback URL from another user's browser cannot attach accounts to that user. States are single-use (`used_at` set conditionally), so a replayed callback fails. Apply migration `20261007_phase7_01_oauth_state.sql`; `prune_oauth_states(1)` removes stale rows.
+
+
 ## Pagination
 
 List endpoints accept `?page=1&limit=20` (max 100). Response includes `meta: { total, page, limit }` or `pagination`.

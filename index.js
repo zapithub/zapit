@@ -27,6 +27,7 @@ import { generateOTP, hashOTP, verifyOTPRecord, attemptsAfterFailure, OTP_MAX_AT
 import { verifyMetaSignature, verifyWebhookVerifyToken, claimWebhookEvent } from './src/utils/webhook.js';
 import { generateRouteCode, resolveTenantForInbound, upsertWaCustomerTenant, claimSharedGuidance, resolveSendCreds } from './src/utils/tenantRouting.js';
 import { evaluateCharge, expectedAmountMinor, cancelSubscriptionPlan, reactivateDecision, activationFields, normalizeCycle } from './src/utils/billing.js';
+import { newOAuthState, hashState, newPkcePair, stateDecision, sanitizeProviderError, buildAuthorizeUrl, OAUTH_STATE_TTL_MS } from './src/utils/oauth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -2504,50 +2505,82 @@ app.get('/social/platforms', authenticate, async (req, res) => {
 });
 
 // POST /social/connect/:platform
+const SOCIAL_PROVIDERS = {
+  instagram: { id:'instagram', clientId:META_APP_ID,       clientSecret:META_APP_SECRET,       scope:'instagram_basic,instagram_content_publish,pages_show_list,pages_manage_posts,pages_read_engagement' },
+  facebook:  { id:'facebook',  clientId:META_APP_ID,       clientSecret:META_APP_SECRET,       scope:'instagram_basic,instagram_content_publish,pages_show_list,pages_manage_posts,pages_read_engagement' },
+  tiktok:    { id:'tiktok',    clientId:TIKTOK_CLIENT_KEY, clientSecret:TIKTOK_CLIENT_SECRET, scope:'video.upload,video.publish' },
+  youtube:   { id:'youtube',   clientId:YOUTUBE_CLIENT_ID, clientSecret:YOUTUBE_CLIENT_SECRET, scope:'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube' },
+};
+
 app.post('/social/connect/:platform', authenticate, async (req, res) => {
   const { platform } = req.params;
-  const state = Buffer.from(JSON.stringify({ user_id:req.user.id, platform, ts:Date.now() })).toString('base64');
-  const redir  = encodeURIComponent(`${BACKEND_URL}/social/callback/${platform}`);
-  let authUrl  = '';
-  switch (platform) {
-    case 'instagram': case 'facebook':
-      authUrl = `https://www.facebook.com/dialog/oauth?client_id=${META_APP_ID}&redirect_uri=${redir}&scope=instagram_basic,instagram_content_publish,pages_show_list,pages_manage_posts,pages_read_engagement&state=${state}&response_type=code`;
-      break;
-    case 'tiktok':
-      authUrl = `https://www.tiktok.com/v2/auth/authorize/?client_key=${TIKTOK_CLIENT_KEY}&scope=video.upload,video.publish&response_type=code&redirect_uri=${redir}&state=${state}`;
-      break;
-    case 'youtube':
-      authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${YOUTUBE_CLIENT_ID}&redirect_uri=${redir}&response_type=code&scope=https://www.googleapis.com/auth/youtube.upload+https://www.googleapis.com/auth/youtube&state=${state}&access_type=offline`;
-      break;
-    default:
-      return res.status(400).json({ success:false, error:'Platform not supported yet.' });
+  const provider = SOCIAL_PROVIDERS[platform];
+  if (!provider) return res.status(400).json({ success:false, error:'Platform not supported yet.' });
+  if (!provider.clientId || !provider.clientSecret)
+    return res.status(400).json({ success:false, error:`${platform} is not configured on this server.` });
+
+  // S-07: random opaque handle stored server-side (hash only) + PKCE S256.
+  const state = newOAuthState();
+  const { verifier, challenge, method } = newPkcePair();
+  const redir = `${BACKEND_URL}/social/callback/${platform}`;
+  const { error:stateErr } = await supabase.from('oauth_states').insert({
+    user_id:req.user.id, platform, state_hash:hashState(state),
+    code_verifier:encrypt(verifier), redirect_uri:redir,
+    expires_at:new Date(Date.now()+OAUTH_STATE_TTL_MS).toISOString(),
+  });
+  if (stateErr) {
+    console.error('[OAUTH state store]', stateErr.message);
+    return res.status(503).json({ success:false, error:'Social connect is temporarily unavailable. Please try again shortly.' });
   }
-  return res.json({ success:true, data:{ auth_url:authUrl, platform }, message:`Open this URL to connect ${platform}` });
+  // Best-effort housekeeping — must never block or fail the connect flow.
+  supabase.from('oauth_states').delete().lt('expires_at', new Date(Date.now()-24*60*60*1000).toISOString()).then(()=>{}, ()=>{});
+
+  const authUrl = buildAuthorizeUrl(provider, { state, challenge, method, redirectUri:redir });
+  if (!authUrl) return res.status(400).json({ success:false, error:'Platform not supported yet.' });
+  return res.json({ success:true, data:{ auth_url:authUrl, platform, expires_in:Math.round(OAUTH_STATE_TTL_MS/1000), pkce:method }, message:`Open this URL to connect ${platform}` });
 });
 
 // GET /social/callback/:platform
 app.get('/social/callback/:platform', async (req, res) => {
   const { platform } = req.params;
   const { code, state, error:oErr } = req.query;
-  if (oErr) return res.redirect(`${FRONTEND_URL}/settings/social?error=${oErr}`);
-  if (!code||!state) return res.redirect(`${FRONTEND_URL}/settings/social?error=missing_params`);
+  const fail = (e) => res.redirect(`${FRONTEND_URL}/settings/social?error=${encodeURIComponent(e)}`);
+  if (oErr) return fail(`provider_${sanitizeProviderError(oErr)}`);
+  if (!code||!state) return fail('missing_params');
+  if (!SOCIAL_PROVIDERS[platform]) return fail('unsupported_platform');
   try {
-    const stateData = JSON.parse(Buffer.from(String(state),'base64').toString());
-    const userId    = stateData.user_id;
+    // S-07: the state is an opaque handle. Identity comes from the DB row — never
+    // from the callback URL — and the row can be redeemed exactly once.
+    const { data:stateRow } = await supabase.from('oauth_states').select('*').eq('state_hash', hashState(String(state))).single();
+    const decision = stateDecision({ record: stateRow, platform });
+    if (!decision.ok) {
+      console.warn(JSON.stringify({ level:'warn', msg:'oauth state rejected', platform, reason:decision.reason }));
+      return fail(`state_${decision.reason}`);
+    }
+    const { data:redeemed } = await supabase.from('oauth_states')
+      .update({ used_at:new Date().toISOString() }).eq('id', stateRow.id).is('used_at', null).select('id');
+    if (!redeemed || !redeemed.length) return fail('state_used');
+    const userId       = stateRow.user_id;
+    const codeVerifier = stateRow.code_verifier ? decrypt(stateRow.code_verifier) : null;
+    const pkceParam    = codeVerifier ? `&code_verifier=${encodeURIComponent(codeVerifier)}` : '';
     let accessToken='', refreshToken='', expiresAt='', accountId='', accountName='', profilePicUrl='';
 
     if (platform==='instagram'||platform==='facebook') {
-      const tr   = await (await fetch(`https://graph.facebook.com/v18.0/oauth/access_token?client_id=${META_APP_ID}&client_secret=${META_APP_SECRET}&redirect_uri=${encodeURIComponent(`${BACKEND_URL}/social/callback/${platform}`)}&code=${code}`)).json();
+      const tr   = await (await fetch(`https://graph.facebook.com/v18.0/oauth/access_token?client_id=${META_APP_ID}&client_secret=${META_APP_SECRET}&redirect_uri=${encodeURIComponent(`${BACKEND_URL}/social/callback/${platform}`)}&code=${code}${pkceParam}`)).json();
       accessToken = tr.access_token||'';
       const me   = await (await fetch(`https://graph.facebook.com/me?access_token=${accessToken}&fields=id,name,picture`)).json();
       accountId  = me.id; accountName = me.name; profilePicUrl = me.picture?.data?.url||'';
     } else if (platform==='tiktok') {
-      const tr   = await (await fetch('https://open.tiktokapis.com/v2/oauth/token/', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams({ client_key:TIKTOK_CLIENT_KEY||'', client_secret:TIKTOK_CLIENT_SECRET||'', code:String(code), grant_type:'authorization_code', redirect_uri:`${BACKEND_URL}/social/callback/tiktok` }) })).json();
+      const ttBody = { client_key:TIKTOK_CLIENT_KEY||'', client_secret:TIKTOK_CLIENT_SECRET||'', code:String(code), grant_type:'authorization_code', redirect_uri:`${BACKEND_URL}/social/callback/tiktok` };
+      if (codeVerifier) ttBody.code_verifier = codeVerifier;   // S-07 PKCE
+      const tr   = await (await fetch('https://open.tiktokapis.com/v2/oauth/token/', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams(ttBody) })).json();
       accessToken = tr.data?.access_token||''; refreshToken = tr.data?.refresh_token||'';
       expiresAt   = new Date(Date.now()+(tr.data?.expires_in||86400)*1000).toISOString();
       accountId   = tr.data?.open_id||''; accountName = 'TikTok Account';
     } else if (platform==='youtube') {
-      const tr   = await (await fetch('https://oauth2.googleapis.com/token', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams({ client_id:YOUTUBE_CLIENT_ID||'', client_secret:YOUTUBE_CLIENT_SECRET||'', redirect_uri:`${BACKEND_URL}/social/callback/youtube`, code:String(code), grant_type:'authorization_code' }) })).json();
+      const ytBody = { client_id:YOUTUBE_CLIENT_ID||'', client_secret:YOUTUBE_CLIENT_SECRET||'', redirect_uri:`${BACKEND_URL}/social/callback/youtube`, code:String(code), grant_type:'authorization_code' };
+      if (codeVerifier) ytBody.code_verifier = codeVerifier;   // S-07 PKCE
+      const tr   = await (await fetch('https://oauth2.googleapis.com/token', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams(ytBody) })).json();
       accessToken = tr.access_token||''; refreshToken = tr.refresh_token||'';
       expiresAt   = new Date(Date.now()+(tr.expires_in||3600)*1000).toISOString();
       const ch   = await (await fetch('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true', { headers:{ Authorization:`Bearer ${accessToken}` } })).json();
