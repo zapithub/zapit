@@ -452,6 +452,54 @@ try {
   else pass('Currency tests pin the fallback + checkout/webhook parity (B-05)');
 } catch { fail('tests/unit/currency.test.mjs missing (B-05)'); }
 
+
+// ── Phase 8.2 — the in-chat order + payment loop (W-01) ──
+try {
+  const ord = fs.readFileSync('src/utils/orders.js','utf8');
+  for (const fn of ['detectOrderIntent','parseQuantity','matchProduct','applyMessageToDraft','nextMissingSlot','computeOrderTotals','orderPaymentReference','evaluateOrderPayment','paymentInstructions'])
+    if (!ord.includes(`export function ${fn}`)) fail(`orders util lacks ${fn} (W-01)`);
+  if (!ord.includes("return { ok: false, reason: 'amount_mismatch' }")) fail('order payments are not amount-checked (W-01)');
+  else pass('Order payments are amount-checked against the order row (W-01)');
+  if (!ord.includes("reason: 'currency_mismatch'")) fail('order payments are not currency-checked (W-01)');
+  else pass('Order payments are currency-checked (W-01)');
+  if (!ord.includes('validatePaymentReference') || !ord.includes('REFERENCE_RE')) fail('payment references are not validated (W-01)');
+  else pass('Payment references are validated before use (W-01)');
+} catch { fail('src/utils/orders.js missing (W-01)'); }
+try {
+  if (!/createOrderFromDraft[\s\S]{0,900}generateOrderNumber\(\)/.test(indexJs)) fail('generateOrderNumber still has no call site (W-01)');
+  else pass('generateOrderNumber() runs when the customer orders (W-01)');
+  if (!indexJs.includes('async function handleOrderFlow(') || !indexJs.includes('await handleOrderFlow(')) fail('the chat has no order flow (W-01)');
+  else pass('The chat order flow is wired (W-01)');
+  if (!indexJs.includes('safeDecryptValue(settings?.paystack_secret_key)')) fail("the tenant's Paystack key is still never read (W-01)");
+  else pass("The tenant's own Paystack key creates the charge (W-01)");
+  if (!indexJs.includes('async function settleOrderCharge(') || !indexJs.includes('await settleOrderCharge(event)')) fail('the Paystack webhook does not settle orders (W-01)');
+  else pass('The Paystack webhook settles in-chat orders (W-01)');
+  if (!indexJs.includes('evaluateOrderPayment({ order, verifyData')) fail('order settlement trusts the payload (W-01)');
+  else pass('Order settlement is verified against the order row (W-01)');
+  if (!indexJs.includes("app.post('/whatsapp/orders/:id/payment-link'") || !indexJs.includes("app.post('/whatsapp/orders/:id/verify-payment'"))
+    fail('no merchant recovery routes for order payments (W-01)');
+  else pass('Merchants can re-send and verify an order payment (W-01)');
+  if (!indexJs.includes("source: 'whatsapp'")) fail('chat orders are not marked with their source (W-01)');
+  else pass('Chat orders are marked source=whatsapp (W-01)');
+} catch { fail('index.js missing for the order-loop checks'); }
+try {
+  const mig = fs.readFileSync('supabase/migrations/20261012_phase8_02_order_loop.sql','utf8');
+  const cols = ['items','delivery_address','delivery_fee','payment_provider','payment_reference','payment_link','payment_currency','payment_amount_minor','payment_verified_at','gateway_response','source'];
+  const missing = cols.filter(c => !mig.includes(`ADD COLUMN IF NOT EXISTS ${c}`));
+  if (missing.length) fail(`Phase 8.2 migration lacks orders columns: ${missing.join(', ')}`);
+  else pass('Phase 8.2 migration adds the order-payment columns (W-01)');
+  if (!mig.includes('CREATE TABLE IF NOT EXISTS order_drafts') || !mig.includes('UNIQUE (user_id, contact_id)'))
+    fail('order drafts have no storage (W-01)');
+  else pass('Multi-turn order drafts have storage (W-01)');
+  if (!mig.includes('idx_orders_payment_reference') || !mig.includes('prune_order_drafts')) fail('Phase 8.2 migration lacks the reference index/prune (W-01)');
+  else pass('Phase 8.2 migration indexes the reference and prunes stale drafts (W-01)');
+} catch { fail('Phase 8.2 migration file missing (W-01)'); }
+try {
+  const t = fs.readFileSync('tests/unit/orders.test.mjs','utf8');
+  if (!t.includes('never a price') || !t.includes('amount_mismatch')) fail('orders test does not pin quantity/amount safety (W-01)');
+  else pass('Orders test pins quantity parsing + the payment decision matrix (W-01)');
+} catch { fail('tests/unit/orders.test.mjs missing (W-01)'); }
+
 // ── Phase 8.1 — every inbound message handled once, honouring opt-out/takeover (W-02/W-04) ──
 try {
   const inb = fs.readFileSync('src/utils/inbound.js','utf8');
@@ -549,8 +597,8 @@ try {
 
 console.log('');
 if (fails) {
-  console.error(`\n${fails} check(s) failed — Phase 8.1 hardening not done.`);
+  console.error(`\n${fails} check(s) failed — Phase 8.2 hardening not done.`);
   process.exit(1);
 } else {
-  console.log('All security checks passed (Phases 1–8.1). ✅');
+  console.log('All security checks passed (Phases 1–8.2). ✅');
 }

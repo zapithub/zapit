@@ -573,20 +573,47 @@ fixed first — the routing queries themselves could never have worked with it i
   - `tests/unit/inbound.test.mjs`; `security-check` 138 → **152 checks**
   - **Verification:** `node --check` ✅, `npm test` 16 suites ✅, `security:check` 152/152 ✅, live smoke ✅
 
+## Phase 8.2 — Core loop: order and pay inside the chat (W-01) — Detail
+
+| Task | Finding | Description | Status |
+|------|---------|-------------|--------|
+| 8.2.0 | **W-01** | The audit's biggest functional gap: `generateOrderNumber()` had **zero call sites** and a tenant's `paystack_secret_key` was never read — nobody could place or pay for an order. The chat now captures an order and creates the row | ✅ Done |
+| 8.2.1 | **W-01** | **Multi-turn capture** (`order_drafts`, one per business+contact, 6 h TTL): product → quantity → delivery address, asking only for what is missing. "i want 2 bags of rice" → "12 Adeola Street, Lekki" completes; `order` opens it, `cancel` clears it. Quantity understands digits/`x3`/words/`dozen` but never a phone number or a price; a stale draft (>15 min) never hijacks an unrelated question | ✅ Done |
+| 8.2.2 | **W-01** | The order row carries `items`, `delivery_address`, `subtotal/delivery_fee/total`, `generateOrderNumber()`, a unique `payment_reference` (`zapord_…`) and `source:'whatsapp'` — so an in-chat order is indistinguishable in the dashboard from any other, and only one order can own a reference | ✅ Done |
+| 8.2.3 | **W-01** | **Payment request:** with a Paystack key the charge is initialised **on the tenant's own account** (their key, their settlement) with minor-unit amount/currency, metadata `order_id`/`order_number`, and our reference; otherwise the customer receives the merchant's bank details (reference = the order number) or a manual-confirmation reply. Paystack being unreachable never loses the order — it degrades to bank transfer/manual on the same row | ✅ Done |
+| 8.2.4 | **W-01** | **Settlement is verified, not trusted:** `POST /webhook/paystack` recognises an order reference and verifies it with the *tenant's* key; `evaluateOrderPayment` requires the reference, `status=success`, the order's own currency, and the order's own amount (±1 minor unit) before marking `paid`/`confirmed` and confirming to the customer. A mismatch is logged for reconciliation and the order is left alone | ✅ Done |
+| 8.2.5 | **W-01** | **Merchant recovery:** `POST /whatsapp/orders/:id/payment-link` re-sends/re-creates the request, `POST /whatsapp/orders/:id/verify-payment` verifies a missed callback, and the existing `confirm-payment` now records `payment_verified_at` + the rail (and honours `{order}` in the template) | ✅ Done |
+| 8.2.6 | — | Migration `20261012_phase8_02_order_loop.sql` (14 order columns, unique reference index, `order_drafts` + RLS + `prune_order_drafts`; idempotent). Without it the loop still creates a legacy-shaped order and never blocks the AI reply | ✅ Done |
+| 8.2.7 | — | `tests/unit/orders.test.mjs` (17th suite): intent/quantity/product/address, the multi-turn and one-shot drafts, the stale-draft rule, totals, reference generation, every message template, and the payment-decision matrix (9 refusals + tolerance) + wiring/migration assertions. `security-check` 152 → **166 checks** | ✅ Done |
+
+**Phase 8.2 Exit criteria:** a customer can order in chat — **PASS ✅**; an order row exists with a number and a payment reference — **PASS ✅**; a Paystack link **or** bank reference is sent — **PASS ✅**; the webhook marks it paid only after independent verification — **PASS ✅**; the customer is confirmed — **PASS ✅**; tests + security checks green — **PASS ✅**.
+
+**Verification (2026-10-01):**
+- `node --input-type=module --check` on `index.js`/`src/utils/orders.js` — ✅; `npm test` — **17 suites ✅**; `npm run security:check` — **166/166 ✅** (was 152)
+- **Live loop proof** (`npm run smoke:order` — real server + in-memory PostgREST + stub Paystack, 19/19 checks): "i want 2 bags of rice" → welcome + *"Great — what is the delivery address?"*; "12 Adeola Street, Lekki" → order `ZAP-MUPDHQUV-DDAF`, `Rice ×2`, total `NGN 5,500` (5,000 + 500 delivery), `payment_reference zapord_…`, `payment_link https://pay.test/…`, `source whatsapp` → signed Paystack `charge.success` → **verified with the tenant key → `payment_status=paid`, `status=confirmed`, `paid_at`/`gateway_response` stored, customer confirmed**; `cancel` cleared the draft; 3/3 wamid claims ✅
+- The same run proves the no-key fallback: with no Paystack key the order is created as `bank_transfer` and the customer receives the bank details instead of a link ✅
+
+### 2026-10-01 — Phase 8.2 Completed ✅ — Core loop: order and pay inside the chat (W-01)
+- **Phase 8.2 — DONE**
+  - `src/utils/orders.js`: intent, quantity/product/address capture, totals, references, message templates, `evaluateOrderPayment`
+  - `index.js`: `handleOrderFlow` (chat), `createOrderFromDraft`, `initializeOrderPayment` (tenant key), `requestOrderPayment`, `settleOrderCharge` + `markOrderPaid` (webhook), `payment-link`/`verify-payment` routes
+  - Migration `20261012` (order payment fields + `order_drafts`); `tests/unit/orders.test.mjs`; `security-check` 152 → **166 checks**
+  - **Verification:** `node --check` ✅, `npm test` 17 suites ✅, `security:check` 166/166 ✅, live order loop ✅
+
 ## Final Summary (2026-10-01)
 
 | Metric | Before | After |
 |--------|--------|-------|
 | Critical findings | 11 | 0 |
 | High findings | 14 | 0 |
-| Security check | — | 152/152 ✅ (Phase 8.1) |
-| Tests | 0 | 16 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth, session, cookies, quota, currency, analytics, inbound) |
+| Security check | — | 166/166 ✅ (Phase 8.2) |
+| Tests | 0 | 17 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth, session, cookies, quota, currency, analytics, inbound, orders) |
 | Docs | 2 lines | 150+ lines + 5 docs |
-| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 4,155 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE · 7.2 sessions+cookies · 7.3 quotas · 7.4 one price resolver + currency-pinned webhook · 7.5 exact analytics aggregates · 8.1 inbound ingestion + consent + takeover), modular imports, allowlist, spawn, cache, locks |
+| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 4,585 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE · 7.2 sessions+cookies · 7.3 quotas · 7.4 one price resolver + currency-pinned webhook · 7.5 exact analytics aggregates · 8.1 inbound ingestion + consent + takeover · 8.2 in-chat order + payment loop), modular imports, allowlist, spawn, cache, locks |
 | Frontend | 4× duplicated tokens, hardcode, 45 raw innerHTML | shared.css, pricing.json, DOMPurify+CSP, PWA, a11y focus trap |
 | DB | no migrations | 10 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout, 7.1 OAuth state, 7.2 hashed sessions, 7.3 usage counters, 7.5 analytics aggregates) + advisory locks (7.4 is code-only) |
 
-**Next steps for the team:** Run `supabase db push` — apply the pending migrations `20261002`…**`20261011`** (`20261001` too if the Phase 4 hardening was never pushed) — then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`; set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN` + `TRUST_PROXY=false` (unless genuinely behind a trusted proxy); share `GET /whatsapp/qr-code` route codes with free-plan users; create the Stripe/RDP-free Paystack account currencies you intend to charge (GBP/EUR are **not** settleable by Paystack — GB/EU customers are billed the USD price as USD); then continue **Phase 7.5 (analytics counts)** → Phase 8 → 9 → 10, before paid traffic per Phase 0 §A.4. Phases 6.1–6.5 + 7.1–7.4 closed — **all P0 audit findings + the 6.5 P1s + B-05/B-06/B-09 resolved**. 🎉
+**Next steps for the team:** Run `supabase db push` — apply the pending migrations `20261002`…**`20261012`** (`20261001` too if the Phase 4 hardening was never pushed) — then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`; set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN` + `TRUST_PROXY=false` (unless genuinely behind a trusted proxy); share `GET /whatsapp/qr-code` route codes with free-plan users; create the Stripe/RDP-free Paystack account currencies you intend to charge (GBP/EUR are **not** settleable by Paystack — GB/EU customers are billed the USD price as USD); then continue **Phase 7.5 (analytics counts)** → Phase 8 → 9 → 10, before paid traffic per Phase 0 §A.4. Phases 6.1–6.5 + 7.1–7.4 closed — **all P0 audit findings + the 6.5 P1s + B-05/B-06/B-09 resolved**. 🎉
 
 ---
 

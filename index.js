@@ -33,6 +33,8 @@ import { AUTH_ACCESS_COOKIE, AUTH_REFRESH_COOKIE, parseCookies, isMutating, csrf
 import { METRICS, quotaGuard, consumeQuota, quotaExceededBody, usageSnapshot, metricForContentType, periodStart } from './src/utils/quota.js';
 import { revenueTotals, revenueByDay, contentByType, contactsBySegment, ledgerTotals, fetchAllRows, headlineCurrency, ANALYTICS_MAX_ROWS } from './src/utils/analytics.js';
 import { extractInboundMessages, messageTextOf, classifyOptKeyword, isGreetingOnly, shouldWelcome, isBotPaused, takeoverFields, optOutFields, optInFields, STOP_CONFIRMATION, START_CONFIRMATION } from './src/utils/inbound.js';
+import { DRAFT_TTL_MS, detectOrderIntent, isOrderMenuKeyword, isCancelKeyword, applyMessageToDraft, nextMissingSlot, questionFor, draftExpired, computeOrderTotals, orderPaymentReference, buildOrderSummary, paymentInstructions, orderConfirmedMessage, evaluateOrderPayment, validatePaymentReference } from './src/utils/orders.js';
+import { isChargeableCurrency } from './src/config/plans.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -558,6 +560,13 @@ const getPricingForLocation = __srcGetPricing;
 // ─── PAYSTACK ───────────────────────────────────────────────────
 // All gateway calls are time-bounded: a hanging upstream must never wedge a
 // request handler or the webhook (which already acked Paystack).
+// Phase 8.2: the Paystack endpoint is overridable outside production so the
+// whole order loop (initialize → webhook verify → paid) can be smoke-tested
+// end-to-end with `npm run smoke:order`. Production always talks to Paystack.
+const PAYSTACK_API_BASE = (process.env.NODE_ENV !== 'production' && process.env.PAYSTACK_API_BASE)
+  ? String(process.env.PAYSTACK_API_BASE).replace(/\/+$/, '')
+  : 'https://api.paystack.co';
+
 async function paystackFetch(url, options = {}, timeoutMs = 10000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -567,7 +576,7 @@ async function paystackFetch(url, options = {}, timeoutMs = 10000) {
 }
 
 async function initializePaystack({ email, amount, currency = 'NGN', metadata, callback_url }) {
-  const res = await paystackFetch('https://api.paystack.co/transaction/initialize', {
+  const res = await paystackFetch(`${PAYSTACK_API_BASE}/transaction/initialize`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, amount: Math.round(amount * 100), currency, metadata, callback_url: callback_url || `${FRONTEND_URL}/payment-success` }),
@@ -576,7 +585,7 @@ async function initializePaystack({ email, amount, currency = 'NGN', metadata, c
 }
 
 async function verifyPaystack(reference) {
-  const res = await paystackFetch(`https://api.paystack.co/transaction/verify/${reference}`, {
+  const res = await paystackFetch(`${PAYSTACK_API_BASE}/transaction/verify/${reference}`, {
     headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}` },
   });
   return res.json();
@@ -593,6 +602,336 @@ function verifyPaystackSig(rawBody, sig) {
     if (a.length !== b.length) return false;
     return crypto.timingSafeEqual(a, b);
   } catch { return false; }
+}
+
+// ─── ORDER + PAYMENT LOOP (Phase 8.2 — W-01) ─────────────────────
+// The Phase 0 audit's biggest functional gap: `generateOrderNumber()` had zero
+// call sites and a tenant's `paystack_secret_key` was never read, so no customer
+// could actually order or pay in chat. The decision logic lives in
+// src/utils/orders.js (pure); this is the I/O around it:
+// message → draft → order row → Paystack link / bank reference → webhook marks
+// paid → customer confirmation.
+
+const ORDER_PRODUCT_TTL_MS = 60 * 1000;
+const orderProductCache = new Map(); // userId → { at, products }
+
+function safeDecryptValue(value) {
+  if (!value) return null;
+  try { return decrypt(value); } catch { return null; }
+}
+
+async function loadOrderProducts(userId) {
+  const hit = orderProductCache.get(userId);
+  if (hit && Date.now() - hit.at < ORDER_PRODUCT_TTL_MS) return hit.products;
+  try {
+    const { data } = await supabase.from('products')
+      .select('id,name,price,sale_price,currency,stock_quantity,is_active')
+      .eq('user_id', userId).limit(200);
+    const products = (data || [])
+      .filter(p => p && p.is_active !== false && Number(p.price) > 0)
+      .map(p => ({ ...p, price: Number(p.sale_price) > 0 && Number(p.sale_price) < Number(p.price) ? Number(p.sale_price) : Number(p.price) }));
+    if (orderProductCache.size > 500) orderProductCache.clear();
+    orderProductCache.set(userId, { at: Date.now(), products });
+    return products;
+  } catch { return []; }
+}
+
+/** The send channel for a tenant, or null (W-07: never the platform token). */
+function tenantSendCreds(settings) {
+  try {
+    return resolveSendCreds({
+      connectionMethod: settings?.connection_method,
+      waPhoneNumberId: settings?.wa_phone_number_id,
+      waAccessToken: safeDecryptValue(settings?.wa_access_token),
+    }, { phoneNumberId: WA_PHONE_NUMBER_ID, accessToken: WA_ACCESS_TOKEN });
+  } catch (e) { console.warn('[order send channel]', e.message); return null; }
+}
+
+/** Send a customer a message and mirror it into their conversation. */
+async function notifyOrderCustomer({ userId, settings, contactId, phone, text }) {
+  const creds = tenantSendCreds(settings);
+  if (!creds || !phone) return false;
+  try {
+    await sendWAMessage({ phoneNumberId: creds.phoneNumberId, accessToken: creds.accessToken, to: phone, message: text });
+  } catch (e) { console.warn('[order notify skip]', e.message); return false; }
+  try {
+    let conversationId = null;
+    if (contactId) {
+      const { data: rows } = await supabase.from('conversations').select('id')
+        .eq('user_id', userId).eq('contact_id', contactId).eq('status', 'open').limit(1);
+      conversationId = (Array.isArray(rows) ? rows[0] : rows)?.id || null;
+    }
+    await supabase.from('messages').insert({
+      conversation_id: conversationId, direction: 'outbound', type: 'text',
+      content: text, status: 'sent', ai_processed: false,
+    });
+  } catch { /* the reply already went out; the inbox mirror is best-effort */ }
+  return true;
+}
+
+async function loadOrderDraft(userId, contactId) {
+  if (!contactId) return { draft: null, available: false };
+  try {
+    const { data, error } = await supabase.from('order_drafts').select('*')
+      .eq('user_id', userId).eq('contact_id', contactId).limit(1);
+    if (error) throw error;
+    return { draft: (Array.isArray(data) ? data[0] : data) || null, available: true };
+  } catch (e) {
+    if (!/order_drafts/.test(String(e?.message || ''))) console.warn('[order draft read]', e.message);
+    return { draft: null, available: false };
+  }
+}
+
+async function saveOrderDraft({ userId, contactId, conversationId, draft }) {
+  try {
+    const { error } = await supabase.from('order_drafts').upsert({
+      user_id: userId, contact_id: contactId, conversation_id: conversationId || null,
+      product_id: draft.product_id || null, product_name: draft.product_name || null,
+      unit_price: draft.unit_price ?? null, currency: draft.currency || null,
+      quantity: draft.quantity ?? null, delivery_address: draft.delivery_address || null,
+      items: draft.items || null, turns: draft.turns || 0, last_message: draft.last_message || null,
+      updated_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + DRAFT_TTL_MS).toISOString(),
+    }, { onConflict: 'user_id,contact_id' });
+    if (error) { console.warn('[order draft save]', error.message); return false; }
+    return true;
+  } catch (e) { console.warn('[order draft save]', e.message); return false; }
+}
+
+async function clearOrderDraft(userId, contactId) {
+  if (!contactId) return;
+  try { await supabase.from('order_drafts').delete().eq('user_id', userId).eq('contact_id', contactId); } catch {}
+}
+
+/** Insert the order row (with a pre-migration fallback shape). */
+async function createOrderFromDraft({ businessSettings, businessUserId, contactRecord, from, customerName, draft }) {
+  const totals      = computeOrderTotals({ unitPrice: draft.unit_price, quantity: draft.quantity, deliveryFee: businessSettings.delivery_fee });
+  const orderNumber = generateOrderNumber();
+  const reference   = orderPaymentReference(orderNumber);
+  const currency    = String(draft.currency || 'NGN').toUpperCase();
+  const canCharge   = isChargeableCurrency(currency) && !!safeDecryptValue(businessSettings.paystack_secret_key);
+  const provider    = canCharge ? 'paystack' : (businessSettings.bank_details ? 'bank_transfer' : 'manual');
+  const nowIso      = new Date().toISOString();
+  const items       = [{ product_id: draft.product_id || null, name: draft.product_name, quantity: draft.quantity, unit_price: draft.unit_price, line_total: totals.subtotal }];
+  const row = {
+    user_id: businessUserId, order_number: orderNumber,
+    customer_name: contactRecord?.name || customerName || 'Customer',
+    customer_phone: from, customer_whatsapp: from,
+    items, product_id: draft.product_id || null, quantity: draft.quantity, unit_price: draft.unit_price,
+    subtotal: totals.subtotal, delivery_fee: totals.delivery_fee, total: totals.total, currency,
+    delivery_address: draft.delivery_address,
+    status: 'pending', payment_status: 'pending',
+    payment_provider: provider, payment_reference: reference,
+    payment_currency: currency, payment_amount: totals.total, payment_amount_minor: totals.minor,
+    payment_requested_at: nowIso, source: 'whatsapp', created_at: nowIso, updated_at: nowIso,
+  };
+  const { data, error } = await supabase.from('orders').insert(row).select().single();
+  if (!error) return data;
+  if (/column|schema cache/i.test(String(error.message || ''))) {
+    // Migration 20261012 not applied yet — record the legacy shape so the
+    // merchant still sees the order; the payment fields degrade to totals only.
+    const { data: legacy } = await supabase.from('orders').insert({
+      user_id: businessUserId, order_number: orderNumber, customer_name: row.customer_name,
+      customer_phone: from, customer_whatsapp: from, product_id: row.product_id,
+      quantity: row.quantity, unit_price: row.unit_price, total: totals.total,
+      currency, status: 'pending', payment_status: 'pending', created_at: nowIso,
+    }).select().single();
+    if (legacy) return { ...legacy, _legacy: true, items, delivery_address: draft.delivery_address, payment_amount_minor: totals.minor };
+  }
+  console.warn('[order create]', error.message);
+  return null;
+}
+
+/** Initialise a Paystack transaction on the TENANT's account (their key). */
+async function initializeOrderPayment({ order, settings, email }) {
+  const secret = safeDecryptValue(settings?.paystack_secret_key);
+  if (!secret) return null;
+  const amountMinor = order.payment_amount_minor != null ? Number(order.payment_amount_minor) : Math.round(Number(order.total || 0) * 100);
+  try {
+    const res = await paystackFetch(`${PAYSTACK_API_BASE}/transaction/initialize`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email, amount: amountMinor, currency: order.payment_currency || order.currency || 'NGN',
+        ...(validatePaymentReference(order.payment_reference) ? { reference: order.payment_reference } : {}),
+        metadata: { order_id: order.id, order_number: order.order_number, user_id: order.user_id, source: 'zapit_chat_order' },
+        callback_url: `${FRONTEND_URL}/payment-success?order=${encodeURIComponent(order.order_number)}`,
+      }),
+    }, 15000);
+    let json = null;
+    try { json = await res.json(); } catch { json = null; }
+    if (!json?.status || !json?.data?.authorization_url) {
+      console.warn(JSON.stringify({ level: 'warn', msg: 'order paystack init failed', order: order.order_number, err: json?.message || res.status }));
+      return null;
+    }
+    return { link: json.data.authorization_url, reference: String(json.data.reference || order.payment_reference) };
+  } catch (e) {
+    console.warn('[order paystack init]', e.message);
+    return null;
+  }
+}
+
+/** Summary + how to pay, and create the gateway request when we can. */
+async function requestOrderPayment({ order, settings, contact }) {
+  const currency = String(order.payment_currency || order.currency || 'NGN').toUpperCase();
+  let provider   = order.payment_provider || 'manual';
+  const reference = order.payment_reference || order.order_number;
+  const totals = {
+    subtotal: Number(order.subtotal ?? (Number(order.unit_price || 0) * Number(order.quantity || 0))),
+    delivery_fee: Number(order.delivery_fee || 0),
+    total: Number(order.total || 0),
+  };
+  const summary = buildOrderSummary({
+    draft: { product_name: order.items?.[0]?.name || order.product_name || 'your order', quantity: order.quantity, delivery_address: order.delivery_address || '' },
+    orderNumber: order.order_number, totals, currency,
+  });
+  let link = order.payment_link || null;
+  if (provider === 'paystack' && !link) {
+    const initialized = await initializeOrderPayment({
+      order, settings,
+      email: contact?.email || `${String(order.customer_phone || order.customer_whatsapp || '').replace(/\D/g, '')}@whatsapp.customer`,
+    });
+    if (initialized) {
+      link = initialized.link;
+      try {
+        await supabase.from('orders').update({ payment_link: link, payment_reference: initialized.reference, updated_at: new Date().toISOString() }).eq('id', order.id);
+      } catch { /* the link still works; only the mirror failed */ }
+    } else if (settings?.bank_details) {
+      provider = 'bank_transfer';
+      try { await supabase.from('orders').update({ payment_provider: 'bank_transfer', updated_at: new Date().toISOString() }).eq('id', order.id); } catch {}
+    } else {
+      provider = 'manual';
+      try { await supabase.from('orders').update({ payment_provider: 'manual', updated_at: new Date().toISOString() }).eq('id', order.id); } catch {}
+    }
+  }
+  const body = paymentInstructions({
+    provider, amount: totals.total, currency, link, bankDetails: settings?.bank_details,
+    orderNumber: order.order_number, reference, businessName: settings?.business_name,
+  });
+  return { message: `${summary}\n\n${body}`, link, provider };
+}
+
+/** Mark an order paid once the gateway has been independently verified. */
+async function markOrderPaid({ order, settings, verifyData }) {
+  const nowIso = new Date().toISOString();
+  const updates = {
+    payment_status: 'paid', paid_at: nowIso, payment_verified_at: nowIso,
+    payment_amount: Number(verifyData?.amount ?? order.payment_amount_minor ?? 0) / 100,
+    gateway_response: {
+      reference: verifyData?.reference || order.payment_reference,
+      amount: verifyData?.amount, currency: verifyData?.currency,
+      channel: verifyData?.channel, gateway_response: verifyData?.gateway_response,
+      paid_at: verifyData?.paid_at,
+    },
+    updated_at: nowIso,
+  };
+  // `enforce_order_transition` owns the order status machine: only the
+  // pending → confirmed transition is ours to make here.
+  if (['pending', 'confirmed'].includes(String(order.status || 'pending'))) updates.status = 'confirmed';
+  const { data: updated, error } = await supabase.from('orders').update(updates)
+    .eq('id', order.id).eq('payment_status', order.payment_status || 'pending').select();
+  if (error || !(Array.isArray(updated) ? updated.length : updated)) {
+    // The status guard may reject the transition — record the payment anyway.
+    const { error: retryErr } = await supabase.from('orders')
+      .update({ ...updates, status: undefined }).eq('id', order.id).eq('payment_status', order.payment_status || 'pending');
+    if (retryErr) { console.error(JSON.stringify({ level: 'error', msg: 'order payment could not be recorded', order: order.order_number, err: retryErr.message })); return false; }
+  }
+  const message = settings?.payment_received_message
+    ? String(settings.payment_received_message).replace('{order}', order.order_number)
+    : orderConfirmedMessage(order.order_number);
+  await notifyOrderCustomer({ userId: order.user_id, settings, contactId: null, phone: order.customer_whatsapp || order.customer_phone, text: message });
+  console.log(JSON.stringify({ level: 'info', msg: 'order payment confirmed', order: order.order_number, userId: order.user_id, amount: updates.payment_amount }));
+  return true;
+}
+
+/**
+ * The Paystack webhook branch for in-chat orders. Returns true when the
+ * reference belongs to one of our orders (so the subscription path below must
+ * not try to interpret it), false otherwise.
+ */
+async function settleOrderCharge(event) {
+  const data = event?.data || {};
+  const reference = String(data.reference || '');
+  if (!reference) return false;
+  let order = null;
+  try {
+    const { data: rows } = await supabase.from('orders').select('*').eq('payment_reference', reference).limit(1);
+    order = (Array.isArray(rows) ? rows[0] : rows) || null;
+  } catch { return false; }                                   // pre-migration: not our reference
+  if (!order) return false;
+  if (order.payment_status === 'paid') { console.log(JSON.stringify({ level: 'info', msg: 'order payment duplicate', order: order.order_number, reference })); return true; }
+
+  let settings = null;
+  try {
+    const { data: s } = await supabase.from('business_settings').select('*').eq('user_id', order.user_id).single();
+    settings = s || null;
+  } catch { settings = null; }
+
+  const secret = safeDecryptValue(settings?.paystack_secret_key);
+  if (!secret) {
+    console.error(JSON.stringify({ level: 'error', msg: 'order payment cannot be verified — tenant Paystack key missing', order: order.order_number, reference }));
+    return true;
+  }
+  let verify = null;
+  try {
+    const res = await paystackFetch(`${PAYSTACK_API_BASE}/transaction/verify/${encodeURIComponent(reference)}`, { headers: { Authorization: `Bearer ${secret}` } });
+    try { verify = await res.json(); } catch { verify = null; }
+  } catch (e) { console.warn('[order verify]', e.message); return true; }
+
+  const decision = evaluateOrderPayment({ order, verifyData: verify?.data, eventData: data });
+  if (!decision.ok) {
+    console.error(JSON.stringify({ level: 'error', msg: `order charge refused (${decision.reason}) — order NOT marked paid`, order: order.order_number, reference }));
+    return true;
+  }
+  await markOrderPaid({ order, settings, verifyData: verify.data });
+  return true;
+}
+
+/**
+ * The in-chat loop itself. Returns true when it replied (so the generic AI
+ * reply must not also fire), false to let processWAMessage answer.
+ */
+async function handleOrderFlow({ businessSettings, businessUserId, contactRecord, conv, from, customerName, msgText, send }) {
+  const contactId = contactRecord?.id || null;
+  const { draft: stored, available } = await loadOrderDraft(businessUserId, contactId);
+
+  if (stored && isCancelKeyword(msgText)) {
+    await clearOrderDraft(businessUserId, contactId);
+    await send('No problem — I have cancelled that order. Message me any time if you change your mind. 🙂');
+    return true;
+  }
+
+  const active = stored && !draftExpired(stored) ? stored : null;
+  const wantsOrder = detectOrderIntent(msgText) || isOrderMenuKeyword(msgText);
+  if (!active && !wantsOrder) return false;
+
+  const products = await loadOrderProducts(businessUserId);
+  if (!products.length) return false;                        // nothing to sell → the AI answers
+
+  const { draft } = applyMessageToDraft({ text: msgText, draft: active, products });
+  if (!draft) return false;
+
+  const missing = nextMissingSlot(draft);
+  if (missing) {
+    if (!available) return false;                            // cannot persist a multi-turn draft
+    draft.last_message = String(msgText).slice(0, 300);
+    if (!(await saveOrderDraft({ userId: businessUserId, contactId, conversationId: conv?.id, draft }))) return false;
+    let question = questionFor(missing);
+    if (missing === 'product' && products.length <= 8) {
+      const lines = products.slice(0, 8).map(p => `• ${p.name} — ${String(p.currency || 'NGN').toUpperCase()} ${Number(p.price).toLocaleString('en-US')}`);
+      question = `Sure! Here's what we have:\n${lines.join('\n')}\n\nWhich one would you like?`;
+    }
+    await send(question);
+    return true;
+  }
+
+  // Complete → order row + payment request.
+  const order = await createOrderFromDraft({ businessSettings, businessUserId, contactRecord, from, customerName, draft });
+  if (!order) { await send('Sorry — I could not place that order just now. Please try again in a moment.'); return true; }
+  await clearOrderDraft(businessUserId, contactId);
+  const payment = await requestOrderPayment({ order, settings: businessSettings, contact: contactRecord });
+  await send(payment.message);
+  return true;
 }
 
 // ─── WHATSAPP HELPERS ───────────────────────────────────────────
@@ -2049,6 +2388,7 @@ app.get('/whatsapp/orders', authenticate, async (req, res) => {
     let q = supabase.from('orders').select('*',{ count:'exact' }).eq('user_id',req.user.id).range(offset,offset+limit-1).order('created_at',{ ascending:false });
     if (status)         q = q.eq('status', sanitizeStr(String(status),20));
     if (payment_status) q = q.eq('payment_status', sanitizeStr(String(payment_status),20));
+    if (req.query.source) q = q.eq('source', sanitizeStr(String(req.query.source),20));
     if (search)         { const safe = sanitizeStr(String(search), 60).replace(/[%_]/g, ''); if (safe) q = q.or(`customer_name.ilike.%${safe}%,customer_phone.ilike.%${safe}%,order_number.ilike.%${safe}%`); }
     const { data, count, error } = await q;
     if (error) throw error;
@@ -2105,10 +2445,19 @@ app.post('/whatsapp/orders/:id/confirm-payment', authenticate, async (req, res) 
   try {
     const { data:order } = await supabase.from('orders').select('*').eq('id',req.params.id).eq('user_id',req.user.id).single();
     if (!order) return res.status(404).json({ success:false, error:'Order not found.' });
-    await supabase.from('orders').update({ payment_status:'paid', paid_at:new Date().toISOString(), status:'confirmed', updated_at:new Date().toISOString() }).eq('id',req.params.id);
+    const nowIso = new Date().toISOString();
+    // Phase 8.2: a manual confirmation is a verification too — record when and
+    // by which rail (the dashboard's Confirm-payment button).
+    await supabase.from('orders').update({
+      payment_status:'paid', paid_at:nowIso, payment_verified_at:nowIso,
+      payment_provider: order.payment_provider || 'manual',
+      updated_at:nowIso,
+    }).eq('id',req.params.id).eq('user_id',req.user.id);
     if (order.customer_whatsapp) {
       const { data:s } = await supabase.from('business_settings').select('*').eq('user_id',req.user.id).single();
-      const msg = s?.payment_received_message || `✅ Payment confirmed for order ${order.order_number}! Thank you 🙏 We're processing your order now.`;
+      const msg = s?.payment_received_message
+        ? String(s.payment_received_message).replace('{order}', order.order_number)
+        : orderConfirmedMessage(order.order_number);
       if (s) {
         try {
           const creds = resolveSendCreds({ connectionMethod:s.connection_method, waPhoneNumberId:s.wa_phone_number_id, waAccessToken:s.wa_access_token?decrypt(s.wa_access_token):null }, { phoneNumberId:WA_PHONE_NUMBER_ID, accessToken:WA_ACCESS_TOKEN });
@@ -2118,6 +2467,51 @@ app.post('/whatsapp/orders/:id/confirm-payment', authenticate, async (req, res) 
     }
     return res.json({ success:true, message:'Payment confirmed and customer notified!' });
   } catch { return res.status(500).json({ success:false, error:'Failed to confirm payment.' }); }
+});
+
+// POST /whatsapp/orders/:id/payment-link   (Phase 8.2 — W-01)
+// Re-sends (and, when needed, re-creates) the payment request — the recovery
+// path for a customer who closed WhatsApp right after ordering.
+app.post('/whatsapp/orders/:id/payment-link', authenticate, async (req, res) => {
+  try {
+    const { data:order } = await supabase.from('orders').select('*').eq('id',req.params.id).eq('user_id',req.user.id).single();
+    if (!order) return res.status(404).json({ success:false, error:'Order not found.' });
+    if (order.payment_status === 'paid') return res.status(409).json({ success:false, error:'Order is already paid.' });
+    const { data:settings } = await supabase.from('business_settings').select('*').eq('user_id',req.user.id).single();
+    if (!settings) return res.status(400).json({ success:false, error:'Set up your business settings first.' });
+    const payment = await requestOrderPayment({ order, settings, contact:null });
+    const sent = await notifyOrderCustomer({
+      userId:req.user.id, settings, contactId:order.contact_id || null,
+      phone:order.customer_whatsapp || order.customer_phone, text:payment.message,
+    });
+    return res.json({ success:true, data:{ provider:payment.provider, link:payment.link, sent },
+      message: sent ? 'Payment request sent to the customer.' : 'Payment request prepared, but WhatsApp delivery failed.' });
+  } catch { return res.status(500).json({ success:false, error:'Failed to create the payment request.' }); }
+});
+
+// POST /whatsapp/orders/:id/verify-payment   (Phase 8.2 — W-01)
+// Merchant-triggered verification against THEIR Paystack account. The webhook
+// does this automatically; this is for a missed callback.
+app.post('/whatsapp/orders/:id/verify-payment', authenticate, async (req, res) => {
+  try {
+    const { data:order } = await supabase.from('orders').select('*').eq('id',req.params.id).eq('user_id',req.user.id).single();
+    if (!order) return res.status(404).json({ success:false, error:'Order not found.' });
+    if (order.payment_status === 'paid') return res.json({ success:true, data:{ already_paid:true, order } });
+    if (!order.payment_reference) return res.status(400).json({ success:false, error:'This order has no payment reference.' });
+    const { data:settings } = await supabase.from('business_settings').select('*').eq('user_id',req.user.id).single();
+    const secret = safeDecryptValue(settings?.paystack_secret_key);
+    if (!secret) return res.status(400).json({ success:false, error:'Add your Paystack secret key to verify payments automatically.' });
+    let verify = null;
+    try {
+      const r = await paystackFetch(`${PAYSTACK_API_BASE}/transaction/verify/${encodeURIComponent(order.payment_reference)}`, { headers:{ Authorization:`Bearer ${secret}` } });
+      try { verify = await r.json(); } catch { verify = null; }
+    } catch { return res.status(502).json({ success:false, error:'Could not reach Paystack. Try again shortly.' }); }
+    const decision = evaluateOrderPayment({ order, verifyData:verify?.data, eventData:null });
+    if (!decision.ok) return res.status(409).json({ success:false, error:`Payment not confirmed (${decision.reason}).`, reason:decision.reason });
+    await markOrderPaid({ order, settings, verifyData:verify.data });
+    const { data:fresh } = await supabase.from('orders').select('*').eq('id',order.id).single();
+    return res.json({ success:true, data:fresh, message:'Payment verified and order confirmed.' });
+  } catch { return res.status(500).json({ success:false, error:'Failed to verify the payment.' }); }
 });
 
 // POST /whatsapp/orders/:id/cancel
@@ -2633,6 +3027,17 @@ async function handleInboundMessage({ message, contact:waContact, phoneNumberId,
       return;
     }
   }
+
+  // ── Phase 8.2 (W-01): the order + payment loop ──
+  // Runs before the generic reply; returns true when it answered (so the AI
+  // does not talk over an order confirmation). Never blocks the AI reply.
+  try {
+    if (await handleOrderFlow({ businessSettings, businessUserId, contactRecord, conv, from, customerName, msgText, send })) {
+      await supabase.from('business_settings').update({ reply_count:(businessSettings.reply_count||0)+1 }).eq('user_id',businessUserId);
+      if (creds) await markWARead(msgId, creds.phoneNumberId, creds.accessToken);
+      return;
+    }
+  } catch (e) { console.warn('[order flow]', e.message); }
 
   // ── Generate & send the AI reply ──
   const { response:aiReply } = await processWAMessage({ businessUserId, customerPhone:from, customerMessage:msgText, businessSettings, conversationId:conv?.id });
@@ -3863,6 +4268,11 @@ app.post('/webhook/paystack', webhookLimiter, async (req, res) => {
     if (event.event === 'charge.success') {
       const { reference } = event.data;
       if (!reference) return;
+
+      // ── Phase 8.2 (W-01): in-chat order payments settle here ──
+      // Returns true when the reference belongs to an order (verified on the
+      // tenant's own Paystack account), so the subscription path is bypassed.
+      try { if (await settleOrderCharge(event)) return; } catch (e) { console.warn('[order webhook]', e.message); }
 
       // Idempotency: same reference already processed → skip (prevents double grant on retry)
       try {

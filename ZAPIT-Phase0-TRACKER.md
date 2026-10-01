@@ -56,7 +56,7 @@ Our prior `CONSULTANT_REVIEW.md` (47 findings) covered security, architecture, f
 | **B-05** | Currency GBP/EUR → `price.USD` mis-pricing | P1 | M | ✅ **FIXED 7.4** — one resolver (`resolvePlanPrice`/`resolveCharge`); only the Paystack-settleable set is charged; GBP/EUR → USD price **reported as USD** with `requested_currency`/`currency_converted`/`billing_note`; the webhook refuses any currency the checkout never charges | **DONE 7.4** |
 | **B-06** | Most quotas unenforced (text/image/video/contacts) | P1 | M | ✅ **FIXED 7.3** — `usage_counters` + atomic `consume_usage` RPC; text/image/video/carousel/regeneration/broadcast/reply paths metered; over-quota → `403 quota_exceeded`; graceful pre-migration fallback | **DONE 7.3** |
 | **B-09** | Monthly reset `update({reply_count:0})` **no filter** → no-op | P1 | S–M | ✅ **FIXED 7.3** — quotas are period-scoped (no reset needed); the legacy mirror resets via a paged, explicitly filtered `.in('user_id', ids)` under an advisory lock, and stale counters are pruned | **DONE 7.3** |
-| **W-01** | **No order/payment creation at all** | P1 | XL | 🔴 OPEN — `generateOrderNumber` unused, tenant `paystack_secret_key` never read | **Phase 8 (core loop)** |
+| **W-01** | **No order/payment creation at all** | P1 | XL | ✅ **FIXED 8.2** — chat capture (product/quantity/address, `order_drafts`) → `orders` row via `generateOrderNumber()` + unique `zapord_…` reference → tenant-key Paystack link or bank reference → webhook verifies (reference/currency/amount) before `paid` + confirmation; `payment-link`/`verify-payment` recovery routes; migration `20261012` | **DONE 8.2** |
 | **W-02** | Welcome stale-state (msg 1 & 2 both only welcome) | P1 | M | ✅ **FIXED 8.1** — the count is computed (never the stale row), `contacts.welcomed_at` marks the single welcome, first message is welcomed+answered | **DONE 8.1** |
 | **W-03** | Broadcast free-text outside 24h → fails; scheduled never runs | P1 | L | 🔴 OPEN — scheduled insert no cron | Phase 8 |
 | **W-04** | Webhook: only first message, no dedup, no human-takeover | P1 | M | ✅ **FIXED 8.1** — every entry/change/message processed (cap 100) with per-wamid dedup; STOP/START recorded with timestamps; manual reply sets `human_takeover` + a 24h bot pause, releasable via `/resume` | **DONE 8.1** |
@@ -91,7 +91,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 | **7.4** | **P1 — Currency-Correct Checkout & Verification** | B-05 | P1 | M | ✅ **DONE 2026-10-01** — single price resolver; only NGN/GHS/ZAR/KES/USD are charged; GBP/EUR → USD price reported as USD (never relabelled); webhook pins currency + exact minor amount to the resolver; 14 suites, 128/128 checks |
 | **7.5** | **P1 — Exact Analytics Aggregates** | D-05 | P1 | M | ✅ **DONE 2026-10-01** — SQL aggregates + paging fallback (no 1,000-row truncation), per-currency revenue, paginated lists with `meta.has_more`, broken overview cache fixed; migration `20261010`; 15 suites, 138/138 checks |
 | **7** | **P1 — Auth, Quotas, Money Correctness** | S-07, S-08, S-09, S-14, B-05, B-06, B-09, D-05, S-15/16/17, S-12 follow-up | P1 | L | ✅ **DONE 2026-10-01 (7.1–7.5)** — OAuth nonce+PKCE, JWT 15 m + hashed refresh + cookie path, Paystack amount matrix, usage_counters + middleware, filtered reset, exact analytics aggregates | **DONE** |
-| **8** | **P1 — Core Loop: Orders & Payments in Chat** | W-01, W-02, W-03 (templates), W-04 (dedup), W-07 done, N-1/N-2 | P1 | XL | 🟡 **IN PROGRESS 2026-10-01** — **8.1 DONE** (W-02/W-04: batched ingestion, welcome-once, STOP/START, human takeover, migration `20261011`; 16 suites, 152/152 checks); **8.2 order/payment loop (W-01)** and **8.3 templates + scheduling (W-03)** pending | Phase 8.2–8.3 |
+| **8** | **P1 — Core Loop: Orders & Payments in Chat** | W-01, W-02, W-03 (templates), W-04 (dedup), W-07 done, N-1/N-2 | P1 | XL | 🟡 **IN PROGRESS 2026-10-01** — **8.1 DONE** (W-02/W-04: batched ingestion, welcome-once, STOP/START, human takeover, migration `20261011`) · **8.2 DONE** (W-01: in-chat order capture → order row + tenant-key Paystack link/bank reference → verified settlement, migration `20261012`; 17 suites, 166/166 checks); **8.3 templates + scheduling (W-03)** pending | Phase 8.3 |
 | **9** | **P1 — Rebuild Social Publishing** | C-01–C-08, P1 | L | Rebuild publishing layer in worker: correct Page/IG ids, long-lived token exchange, refresh job, YouTube multipart, lease-based scheduler (no 5-min window) |
 | **10** | **P1/P2 — UX, Trust, Compliance** | U-01–U-18, §3.6 NDPA, §6 premium system | P1/P2 | L | `U-01` reload not logout (refresh flow), privacy/terms real pages, consent versioned, Today/Sell/Grow/Account IA, `aria-live` etc. already, health `readyz` |
 | **11** | **Observability & Scale Polish** | AR-1–10, §8 SLOs, §9 reliability | P2 | L | Queue (pg-boss), pino + Sentry, `readyz/livez`, chaos checklist, indexes §4.5, retention |
@@ -108,7 +108,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 **PENDING (must still do, in order):**
 - **Phase 6.5 DONE:** S-13, S-15, S-16, S-22 — **all P0 + 6.5 P1s closed** (S-06 in 6.3, B-01/B-02/B-04/B-07 in 6.4, S-05 in 6.2, S-01/S-22/W-07 in 6.1)
 - **Phase 7 complete (7.1–7.5).** Next: **Phase 8** (core loop) → 9 (social) → 10 (UX/NDPA). S-07 closed in 7.1, S-08/S-09 in 7.2, B-06/B-09 in 7.3, B-05 in 7.4, D-05 in 7.5; S-14 closed in 6.4; S-13/S-15/S-16 closed in 6.5
-- **Phase 8:** 8.1 DONE (W-02/W-04) · **8.2 W-01 core loop (largest) pending** · 8.3 W-03 templates + scheduling pending · N-1/N-2
+- **Phase 8:** 8.1 DONE (W-02/W-04) · 8.2 DONE (W-01 core loop) · **8.3 W-03 templates + scheduling pending** · N-1/N-2
 - **Phase 9:** C-01–C-08 rebuild
 - **Phase 10:** U-01–U-18, NDPA
 - **Phase 11:** AR-1–10, SLOs
@@ -302,4 +302,20 @@ entirely requires the Phase 7 auth rework (soft-accept + owner notification + CA
 - `npm test` (16 suites) + `npm run security:check` (152/152) + `node --check` green — **PASS ✅ (2026-10-01)**
 - Live batch proof: one signed delivery with 4 messages across 2 entries/3 changes → 4 per-wamid claims + 4 routing decisions in the log (the old handler processed only the first) — **PASS ✅**
 
-**DONE 8.1:** W-02, W-04. **Pending in Phase 8:** 8.2 W-01 (order + payment loop), 8.3 W-03 (templates + scheduling), N-1/N-2 → then 9 (social) → 10 (UX/NDPA).
+**DONE 8.1:** W-02, W-04. **DONE 8.2:** W-01. **Pending in Phase 8:** 8.3 W-03 (templates + scheduling), N-1/N-2 → then 9 (social) → 10 (UX/NDPA).
+
+
+## 5j. Phase 8.2 — Exit criteria & evidence (DONE 2026-10-01)
+
+**Deliverables:** `src/utils/orders.js` (intent, quantity/product/address capture, totals, references, templates, `evaluateOrderPayment`), `index.js` (`handleOrderFlow`, `createOrderFromDraft`, `initializeOrderPayment` on the tenant key, `requestOrderPayment`, `settleOrderCharge`, `markOrderPaid`, `POST /whatsapp/orders/:id/payment-link`, `POST /whatsapp/orders/:id/verify-payment`), `supabase/migrations/20261012_phase8_02_order_loop.sql` (14 order payment columns, unique reference index, `order_drafts` + RLS + `prune_order_drafts`), `tests/unit/orders.test.mjs` (17th suite), `scripts/security-check.mjs` 152 → 166, `docs/API.md` ("In-chat orders & payments").
+
+**Exit criteria (tracker L59 slice):**
+- customer types quantity/address → **order row** — **PASS ✅** (multi-turn drafts; one-shot "order 3 beans, deliver to 5 Wuse II, Abuja" also completes)
+- `generateOrderNumber` used — **PASS ✅** (the check that the old code failed: zero call sites → one, pinned by test + security check)
+- Paystack link / bank ref — **PASS ✅** (tenant key, minor units, unique `zapord_…` reference; bank details or manual confirmation otherwise)
+- webhook marks **paid** — **PASS ✅** (tenant-key verify + reference/currency/amount match, CAS on `payment_status`, `enforce_order_transition` respected)
+- confirmation — **PASS ✅** (`payment_received_message` with `{order}`, mirrored into the conversation)
+- `npm test` (17 suites) + `npm run security:check` (166/166) + `node --check` green — **PASS ✅ (2026-10-01)**
+- live loop: 3-turn capture → order `ZAP-…` built and payment request sent; cancel clears; 3/3 wamids claimed — **PASS ✅**
+
+**DONE 8.2:** W-01. **Pending in Phase 8:** 8.3 W-03 (templates + scheduling), N-1/N-2 → then 9 (social) → 10 (UX/NDPA).

@@ -213,6 +213,31 @@ All errors: `{ success:false, error:"message", requestId:"..." }`. 401 for auth,
 - Apply migration `20261011_phase8_01_inbound_state.sql`; without it these columns are absent and the
   features degrade safely (welcome falls back to `message_count`, takeover is inert, the reply still sends).
 
+### In-chat orders & payments (Phase 8.2 — W-01)
+
+A customer can now order and pay **in the chat** (before this, `generateOrderNumber()` had zero call sites
+and a tenant's `paystack_secret_key` was never read):
+
+1. **Capture** — an order/price message (or a bare `order`) opens a draft (`order_drafts`, one per
+   business+contact, 6 h TTL). The bot fills **product → quantity → delivery address** across turns
+   ("2 bags of rice" → "12 Adeola Street, Lekki"), asking only for what is missing. `cancel` clears it.
+2. **Order row** — on completion an `orders` row is created with `generateOrderNumber()`, `items`,
+   `delivery_address`, `subtotal/delivery_fee/total`, `source:'whatsapp'`, and a unique
+   `payment_reference` (`zapord_…`).
+3. **Payment request** — with a Paystack key configured the order is initialised **on the tenant's own
+   account** (`payment_link`, minor units, metadata `order_id`/`order_number`); otherwise the customer gets
+   the merchant's bank details (reference = the order number) or a manual-confirmation reply.
+4. **Settlement** — `POST /webhook/paystack` (or `POST /whatsapp/orders/:id/verify-payment`) verifies the
+   charge with the tenant key and only then marks the order `paid` (`paid_at`, `payment_verified_at`,
+   `gateway_response`) and confirms to the customer. The order row's own amount/currency is the reference:
+   a different reference, currency, or amount is refused (`reference_mismatch`/`currency_mismatch`/
+   `amount_mismatch`) and left for reconciliation.
+5. **Recovery** — `POST /whatsapp/orders/:id/payment-link` re-sends the request; the existing
+   `POST /whatsapp/orders/:id/confirm-payment` records a manual/bank confirmation.
+
+Apply migration `20261012_phase8_02_order_loop.sql`; without it the loop falls back to the legacy order
+shape (no multi-turn drafts) and never blocks the AI reply. Orders are metered like any reply.
+
 ## Shared number & tenant routing (S-06)
 
 The Free plan uses ZAPIT's shared WhatsApp number. Delivery is deterministic — a message is only
