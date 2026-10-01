@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ZAPIT — Security smoke check for CI (Phases 1–8.1)
+// ZAPIT — Security smoke check for CI (Phases 1–8.4)
 // Fails (exit 1) if any critical invariant is violated.
 // No external deps, runs on Node 18+.
 
@@ -627,6 +627,36 @@ try {
   else pass('Analytics test pins the 1,001st row (D-05)');
 } catch { fail('tests/unit/analytics.test.mjs missing (D-05)'); }
 
+// ── Phase 8.4 — the loop is reachable from the dashboard, and the proofs run (W-01…W-04) ──
+try {
+  const dash = fs.readFileSync('dashboard.html','utf8');
+  if (!dash.includes("'/whatsapp/orders/' + orderId + '/payment-link'")) fail('the merchant cannot (re)send a payment link (W-01)');
+  else pass('Order detail can send the payment link (W-01)');
+  if (!dash.includes("'/whatsapp/orders/' + orderId + '/verify-payment'")) fail('a missed webhook cannot be verified by hand (W-01)');
+  else pass('Order detail can verify a missed payment (W-01)');
+  if (!dash.includes('o.delivery_address')) fail('in-chat orders show no delivery address (W-01)');
+  else pass('Order detail reads the in-chat delivery address (W-01)');
+  if (!dash.includes('it.unit_price')) fail('in-chat order items render without their price (W-01)');
+  else pass('Order detail prices in-chat items from unit_price/line_total (W-01)');
+  if (!dash.includes("'/whatsapp/conversations/' + convId + '/resume'")) fail('a taken-over chat cannot be handed back to the bot (W-04)');
+  else pass('Inbox can return a taken-over chat to the bot (W-04)');
+  if (!dash.includes('conv.human_takeover') || !dash.includes('bot_paused_until')) fail('the inbox does not show the takeover state (W-04)');
+  else pass('Inbox shows when the bot is paused for a chat (W-04)');
+} catch { fail('dashboard.html missing for the Phase 8 checks'); }
+try {
+  const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
+  const scripts = pkg.scripts || {};
+  if (!scripts['smoke:order'] || !scripts['smoke:broadcast']) fail('the Phase 8 proof scripts are not runnable (W-01/W-03)');
+  else pass('Phase 8 proof scripts are runnable (W-01/W-03)');
+  if (!String(scripts['test:all'] || '').includes('smoke:order')) fail('test:all skips the order-loop proof (W-01)');
+  else pass('test:all runs the order-loop proof (W-01)');
+} catch { fail('package.json missing for the Phase 8.4 checks'); }
+try {
+  const ci = fs.readFileSync('.github/workflows/ci.yml','utf8');
+  if (!ci.includes('smoke:order') || !ci.includes('smoke:broadcast')) fail('CI does not run the Phase 8 proofs (W-01/W-03)');
+  else pass('CI runs the order-loop and broadcast proofs (W-01/W-03)');
+} catch { fail('.github/workflows/ci.yml missing'); }
+
 // validation single-source + migration
 try {
   const v = fs.readFileSync('src/utils/validation.js','utf8');
@@ -641,8 +671,8 @@ try {
 
 console.log('');
 if (fails) {
-  console.error(`\n${fails} check(s) failed — Phase 8.3 hardening not done.`);
+  console.error(`\n${fails} check(s) failed — Phase 8.4 hardening not done.`);
   process.exit(1);
 } else {
-  console.log('All security checks passed (Phases 1–8.3). ✅');
+  console.log('All security checks passed (Phases 1–8.4). ✅');
 }

@@ -114,9 +114,13 @@ Storage bucket `content-media` (private) for uploads.
 
 ```bash
 npm run check              # syntax
-npm run security:check     # 18 security invariants (Phase 1)
+npm run security:check     # 187 security invariants (Phases 1–8.4)
 npm run generate:pricing   # rebuild public/pricing.json from src/config/plans.js
-npm test                   # unit (validation, plans, cache, crypto) — 4 suites
+npm test                   # unit — 18 suites
+npm run test:integration   # live-server integration (self-skips without one)
+npm run smoke:order        # Phase 8 proof: chat → order row → tenant-key Paystack → paid
+npm run smoke:broadcast    # Phase 8 proof: 24h window, templates, scheduled runs
+npm run test:all           # everything CI runs
 npm run test:phase1        # security + check
 npm run test:phase2        # generate:pricing + check + security
 ```

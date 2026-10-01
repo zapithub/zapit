@@ -238,6 +238,22 @@ and a tenant's `paystack_secret_key` was never read):
 Apply migration `20261012_phase8_02_order_loop.sql`; without it the loop falls back to the legacy order
 shape (no multi-turn drafts) and never blocks the AI reply. Orders are metered like any reply.
 
+### Dashboard surfacing (Phase 8.4 — W-01/W-04)
+
+The loop shipped server-side first; the dashboard now exposes it, so a merchant never needs the API
+directly:
+
+- **Order detail** reads the in-chat fields (`delivery_address`, itemised `unit_price`/`line_total`),
+  shows the provider/reference/amount and the payment link, and can **Send Payment Link**
+  (`POST /whatsapp/orders/:id/payment-link` — reports whether it actually reached the customer) and
+  **Verify Payment** (`POST /whatsapp/orders/:id/verify-payment`) when a callback was missed.
+- **Inbox** shows when the bot is quiet for a chat (`human_takeover` / `bot_paused_until`) and offers
+  **Return to bot** (`POST /whatsapp/conversations/:id/resume`); sending a reply takes the chat over
+  (24 h), exactly as the API documents.
+
+Both Phase 8 proofs (`npm run smoke:order`, `npm run smoke:broadcast`) now run in CI, so the order loop
+and the broadcast window can't silently regress.
+
 ### Broadcasts & templates (Phase 8.3 — W-03)
 
 WhatsApp only accepts **free-form** messages inside the **24 hours** that follow a customer's last inbound

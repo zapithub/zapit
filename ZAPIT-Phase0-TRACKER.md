@@ -91,7 +91,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 | **7.4** | **P1 — Currency-Correct Checkout & Verification** | B-05 | P1 | M | ✅ **DONE 2026-10-01** — single price resolver; only NGN/GHS/ZAR/KES/USD are charged; GBP/EUR → USD price reported as USD (never relabelled); webhook pins currency + exact minor amount to the resolver; 14 suites, 128/128 checks |
 | **7.5** | **P1 — Exact Analytics Aggregates** | D-05 | P1 | M | ✅ **DONE 2026-10-01** — SQL aggregates + paging fallback (no 1,000-row truncation), per-currency revenue, paginated lists with `meta.has_more`, broken overview cache fixed; migration `20261010`; 15 suites, 138/138 checks |
 | **7** | **P1 — Auth, Quotas, Money Correctness** | S-07, S-08, S-09, S-14, B-05, B-06, B-09, D-05, S-15/16/17, S-12 follow-up | P1 | L | ✅ **DONE 2026-10-01 (7.1–7.5)** — OAuth nonce+PKCE, JWT 15 m + hashed refresh + cookie path, Paystack amount matrix, usage_counters + middleware, filtered reset, exact analytics aggregates | **DONE** |
-| **8** | **P1 — Core Loop: Orders & Payments in Chat** | W-01, W-02, W-03 (templates), W-04 (dedup), W-07 done, N-1/N-2 | P1 | XL | ✅ **DONE 2026-10-01 (8.1–8.3)** — 8.1 W-02/W-04 (batched ingestion, welcome-once, STOP/START, human takeover) · 8.2 W-01 (in-chat order capture → order row + tenant-key Paystack link/bank reference → verified settlement) · 8.3 W-03 (24h window + templates, scheduled broadcasts executed); migrations `20261011`–`20261013`; **18 suites, 178/178 checks** | **DONE** |
+| **8** | **P1 — Core Loop: Orders & Payments in Chat** | W-01, W-02, W-03 (templates), W-04 (dedup), W-07 done, N-1/N-2 | P1 | XL | ✅ **DONE 2026-10-01 (8.1–8.4)** — 8.1 W-02/W-04 (batched ingestion, welcome-once, STOP/START, human takeover) · 8.2 W-01 (in-chat order capture → order row + tenant-key Paystack link/bank reference → verified settlement) · 8.3 W-03 (24h window + templates, scheduled broadcasts executed) · 8.4 (dashboard surfacing: payment link/verify/takeover UI, correct in-chat order fields, proofs in CI); migrations `20261011`–`20261013`; **18 suites, 187/187 checks, 2 live proofs in CI** | **DONE** |
 | **9** | **P1 — Rebuild Social Publishing** | C-01–C-08, P1 | L | Rebuild publishing layer in worker: correct Page/IG ids, long-lived token exchange, refresh job, YouTube multipart, lease-based scheduler (no 5-min window) |
 | **10** | **P1/P2 — UX, Trust, Compliance** | U-01–U-18, §3.6 NDPA, §6 premium system | P1/P2 | L | `U-01` reload not logout (refresh flow), privacy/terms real pages, consent versioned, Today/Sell/Grow/Account IA, `aria-live` etc. already, health `readyz` |
 | **11** | **Observability & Scale Polish** | AR-1–10, §8 SLOs, §9 reliability | P2 | L | Queue (pg-boss), pino + Sentry, `readyz/livez`, chaos checklist, indexes §4.5, retention |
@@ -108,7 +108,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 **PENDING (must still do, in order):**
 - **Phase 6.5 DONE:** S-13, S-15, S-16, S-22 — **all P0 + 6.5 P1s closed** (S-06 in 6.3, B-01/B-02/B-04/B-07 in 6.4, S-05 in 6.2, S-01/S-22/W-07 in 6.1)
 - **Phase 7 complete (7.1–7.5).** Next: **Phase 8** (core loop) → 9 (social) → 10 (UX/NDPA). S-07 closed in 7.1, S-08/S-09 in 7.2, B-06/B-09 in 7.3, B-05 in 7.4, D-05 in 7.5; S-14 closed in 6.4; S-13/S-15/S-16 closed in 6.5
-- **Phase 8:** ✅ **COMPLETE** — 8.1 (W-02/W-04) · 8.2 (W-01) · 8.3 (W-03, includes N-1/N-2 behaviour) · next: **Phase 9 — social publishing rebuild (C-01–C-08)**
+- **Phase 8:** ✅ **COMPLETE** — 8.1 (W-02/W-04) · 8.2 (W-01) · 8.3 (W-03, includes N-1/N-2 behaviour) · 8.4 (dashboard surfacing + CI proofs) · next: **Phase 9 — social publishing rebuild (C-01–C-08)**
 - **Phase 9:** C-01–C-08 rebuild
 - **Phase 10:** U-01–U-18, NDPA
 - **Phase 11:** AR-1–10, SLOs
@@ -334,3 +334,16 @@ entirely requires the Phase 7 auth rework (soft-accept + owner notification + CA
 - live loop: 3-turn capture → order `ZAP-…` built and payment request sent; cancel clears; 3/3 wamids claimed — **PASS ✅**
 
 **DONE 8.2:** W-01. **Pending in Phase 8:** 8.3 W-03 (templates + scheduling), N-1/N-2 → then 9 (social) → 10 (UX/NDPA).
+
+---
+
+## 5l. Phase 8.4 — Dashboard surfacing & CI proofs (DONE 2026-10-01)
+
+**Deliverables:** `dashboard.html` (order detail reads `delivery_address` + `unit_price`/`line_total`, shows provider/reference/amount/link, **Send Payment Link** → `POST /whatsapp/orders/:id/payment-link`, **Verify Payment** → `/verify-payment`; inbox takeover banner from `human_takeover`/`bot_paused_until` + **Return to bot** → `POST /whatsapp/conversations/:id/resume`), `package.json` + `.github/workflows/ci.yml` (`smoke:order` + `smoke:broadcast` in `test:all` and CI), `scripts/security-check.mjs` 178 → **187 checks**, `README.md`, `docs/API.md`.
+
+**Why this is a fix, not polish:** the loop shipped server-side, but the modal priced in-chat items from `it.price` (they are stored as `unit_price`/`line_total`) so every line rendered **₦0**, the address field read `customer_address` while the loop writes `delivery_address` (**"Not provided"**), and the two recovery routes (payment link, verify) plus the takeover state had no UI at all — the capability existed but no merchant could reach it.
+
+**Exit criteria:** every Phase 8 capability reachable from the UI — **PASS ✅**; in-chat order data renders correctly — **PASS ✅**; loop + window proofs run on every push — **PASS ✅**.
+**Verification:** `npm test` **18 suites ✅**; `npm run security:check` **187/187 ✅**; `npm run test:integration` ✅; **`npm run smoke:order` ✅** and **`npm run smoke:broadcast` ✅** (both now CI steps); `dashboard.html` script blocks parse ✅.
+
+**DONE 8.4.** **Phase 8 complete (8.1–8.4).** Next: **Phase 9 — social publishing rebuild (C-01–C-08)** → 10 (UX/NDPA) → 11 (observability).

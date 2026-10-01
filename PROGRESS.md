@@ -625,16 +625,44 @@ fixed first — the routing queries themselves could never have worked with it i
   - Migration `20261013` (wa_templates + broadcast run columns); `tests/unit/broadcast.test.mjs`; `security-check` 166 → **178 checks**
   - **Verification:** `node --check` ✅, `npm test` 18 suites ✅, `security:check` 178/178 ✅, `npm run smoke:broadcast` 15/15 ✅
 
+## Phase 8.4 — Dashboard surfacing & CI proofs (W-01, W-04) — Detail
+
+The Phase 8 loop shipped server-side; this stage makes it *usable and un-regressable* — the audit's
+whole point is that capability must be reachable, not just present.
+
+| Task | Finding | Description | Status |
+|------|---------|-------------|--------|
+| 8.4.0 | **W-01** | The order detail modal mis-rendered in-chat orders: items were priced from `it.price` (the loop writes `unit_price`/`line_total`, so every line showed **₦0**) and the address was read from `customer_address` (the loop writes `delivery_address`, so it showed *Not provided*). Both fields are now read correctly, and the modal shows provider/reference/amount plus the payment link | ✅ Done |
+| 8.4.1 | **W-01** | **Send Payment Link** (`POST /whatsapp/orders/:id/payment-link`) and **Verify Payment** (`POST /whatsapp/orders/:id/verify-payment`) buttons — recovery paths that existed only as API routes. The toast reports whether the WhatsApp delivery actually went out (`data.sent`), instead of claiming success on a failed send | ✅ Done |
+| 8.4.2 | **W-04** | The inbox now shows the takeover state (`human_takeover` / `bot_paused_until`, with the resume time) and offers **Return to bot** (`POST /whatsapp/conversations/:id/resume`); sending a manual reply confirms the 24 h bot pause in the toast. Previously the bot went quiet with no visible reason and no way back | ✅ Done |
+| 8.4.3 | **W-01/W-03** | The two proof scripts (`smoke:order`, `smoke:broadcast` — real API, in-memory PostgREST, stub Paystack/Graph) are now part of `test:all` **and CI**, so the order loop and the 24 h window are regressions, not one-off demonstrations | ✅ Done |
+| 8.4.4 | — | `security-check` 178 → **187 checks**: the dashboard must keep the payment-link/verify/resume wiring, read the in-chat order fields, and keep the proof scripts runnable and CI-wired. `README.md` command list brought back in line with reality | ✅ Done |
+
+**Phase 8.4 Exit criteria:** every Phase 8 capability is reachable from the UI — **PASS ✅**; in-chat order
+data renders correctly (no ₦0 lines, no missing address) — **PASS ✅**; the loop and window proofs run on
+every push — **PASS ✅**; tests + security checks green — **PASS ✅**.
+
+**Verification (2026-10-01):**
+- `npm test` — **18 suites ✅**; `npm run security:check` — **187/187 ✅** (was 178); `node --check` ✅; `dashboard.html` script blocks parse ✅
+- `npm run test:integration` ✅; `npm run smoke:order` — **all checks passed ✅** (chat → draft → order row `zapord_…` → tenant-key Paystack → `paid`, `payment_verified_at` set); `npm run smoke:broadcast` — **all checks passed ✅** (2 sent, 2 skipped with the window reason; scheduled run executed)
+
+### 2026-10-01 — Phase 8.4 Completed ✅ — Dashboard surfacing & CI proofs (W-01, W-04)
+- **Phase 8.4 — DONE**
+  - `dashboard.html`: in-chat order fields (`delivery_address`, `unit_price`/`line_total`), payment link + **Send Payment Link** / **Verify Payment**, inbox takeover banner + **Return to bot**
+  - `package.json` / `.github/workflows/ci.yml`: `smoke:order` + `smoke:broadcast` in `test:all` and CI
+  - `scripts/security-check.mjs`: 178 → **187 checks**; `README.md` + `docs/API.md` updated
+  - **Verification:** `npm test` 18 suites ✅, `security:check` 187/187 ✅, both smoke proofs ✅
+
 ## Final Summary (2026-10-01)
 
 | Metric | Before | After |
 |--------|--------|-------|
 | Critical findings | 11 | 0 |
 | High findings | 14 | 0 |
-| Security check | — | 178/178 ✅ (Phase 8.3) |
-| Tests | 0 | 18 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth, session, cookies, quota, currency, analytics, inbound, orders, broadcast) |
+| Security check | — | 187/187 ✅ (Phase 8.4) |
+| Tests | 0 | 18 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth, session, cookies, quota, currency, analytics, inbound, orders, broadcast) + 2 live Phase 8 proofs in CI |
 | Docs | 2 lines | 150+ lines + 5 docs |
-| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 4,783 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE · 7.2 sessions+cookies · 7.3 quotas · 7.4 one price resolver + currency-pinned webhook · 7.5 exact analytics aggregates · 8.1 inbound ingestion + consent + takeover · 8.2 in-chat order + payment loop · 8.3 templates + 24h window + broadcast scheduler), modular imports, allowlist, spawn, cache, locks |
+| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 4,783 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE · 7.2 sessions+cookies · 7.3 quotas · 7.4 one price resolver + currency-pinned webhook · 7.5 exact analytics aggregates · 8.1 inbound ingestion + consent + takeover · 8.2 in-chat order + payment loop · 8.3 templates + 24h window + broadcast scheduler · 8.4 dashboard surfacing + CI proofs), modular imports, allowlist, spawn, cache, locks |
 | Frontend | 4× duplicated tokens, hardcode, 45 raw innerHTML | shared.css, pricing.json, DOMPurify+CSP, PWA, a11y focus trap |
 | DB | no migrations | **13 migrations** (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout, 7.1 OAuth state, 7.2 hashed sessions, 7.3 usage counters, 7.5 analytics aggregates, 8.1 inbound state, 8.2 order loop, 8.3 templates + broadcast runs) + advisory locks (7.4 is code-only) |
 

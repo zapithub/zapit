@@ -24,6 +24,8 @@ jobs:
         run: npm run generate:pricing
       - name: Unit tests
         run: npm test
+      - name: Phase 8 proofs (in-chat order loop, broadcast 24h window)
+        run: npm run smoke:order && npm run smoke:broadcast
       - name: Build check
         run: node --input-type=module --check < index.js
       - name: Dockerfile lint (hadolint)
