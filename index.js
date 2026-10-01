@@ -24,6 +24,7 @@ import { subscriptionCache } from './src/utils/cache.js';
 import { withAdvisoryLock } from './src/utils/distributedLock.js';
 import { parsePagination } from './src/utils/validation.js';
 import { verifyMetaSignature, verifyWebhookVerifyToken, claimWebhookEvent } from './src/utils/webhook.js';
+import { generateRouteCode, resolveTenantForInbound, upsertWaCustomerTenant, claimSharedGuidance, resolveSendCreds } from './src/utils/tenantRouting.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -563,11 +564,58 @@ async function markWARead(messageId, phoneNumberId, accessToken) {
   const token = accessToken;
   const numberId = phoneNumberId;
   if (!token || !numberId) return;
-  await fetch(`https://graph.facebook.com/v19.0/${numberId}/messages`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messaging_product: 'whatsapp', status: 'read', message_id: messageId }),
-  }).catch(() => {});
+  try {
+    await fetch(`https://graph.facebook.com/v19.0/${numberId}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', status: 'read', message_id: messageId }),
+    });
+  } catch (e) {
+    // Read receipts are cosmetic — never let them break message handling.
+    console.warn('[WA read receipt]', e.message);
+  }
+}
+
+// ─── SHARED-NUMBER ROUTING HELPERS (Phase 6.3 — S-06) ────────────
+// Route codes make shared-number delivery deterministic: customers prefix their
+// message with #CODE once and are remembered afterwards (wa_customer_tenant).
+
+/** Pick a code not yet used by another tenant (check only; safe before INSERT). */
+async function pickFreeRouteCode(db) {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const code = generateRouteCode();
+    const { data: taken } = await db.from('business_settings').select('id').eq('wa_route_code', code).limit(1);
+    if (!Array.isArray(taken) || taken.length === 0) return code;
+  }
+  return null;
+}
+
+/** Assign a free code to an existing tenant row, retrying on a unique-index race. */
+async function assignRouteCode(db, userId) {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const code = await pickFreeRouteCode(db);
+    if (!code) return null;
+    const { error } = await db.from('business_settings').update({ wa_route_code: code }).eq('user_id', userId);
+    if (!error) return code;
+    if (error.code !== '23505') { console.error('[route code] assignment failed:', error.message || error.code); return null; }
+  }
+  return null;
+}
+
+/**
+ * Guidance reply for a shared-number message we could not route (throttled per
+ * customer, non-fatal). Only ever sent from the PLATFORM's own shared number.
+ */
+async function maybeSendRoutingGuidance(routing, phoneNumberId, customerPhone) {
+  try {
+    if (!WA_PHONE_NUMBER_ID || !WA_ACCESS_TOKEN) return;                       // platform channel not configured
+    if (routing.via !== 'unmatched' && routing.via !== 'unknown_code') return; // ambiguous/unknown number → stay silent
+    if (!(await claimSharedGuidance(supabase, phoneNumberId, customerPhone))) return;
+    const message = routing.via === 'unknown_code'
+      ? `❌ We couldn't find a business with code #${routing.code}. Please check the code your business gave you and try again.`
+      : `👋 Welcome! To reach a business on this number, start your message with their code — for example:\n\n#K7F9QA Hello\n\nAsk the business you're trying to reach for their ZAPIT code.`;
+    await sendWAMessage({ phoneNumberId: WA_PHONE_NUMBER_ID, accessToken: WA_ACCESS_TOKEN, to: customerPhone, message });
+  } catch (e) { console.warn('[WA routing guidance skip]', e.message); }
 }
 
 // ─── AI CONTENT ENGINE ──────────────────────────────────────────
@@ -965,7 +1013,7 @@ Reply (warm, helpful, conversational):`;
     user_id: businessUserId, customer_message: customerMessage, customer_phone: customerPhone,
     ai_response: aiResponse.trim(), ai_model: HF_API_KEY ? 'qwen2.5-72b' : 'gpt-4o-mini',
     ai_confidence: 0.85, conversation_id: conversationId,
-  }).select().single().catch(() => ({ data: null }));
+  }).select().single();
 
   // ─── AUTO-LEARN ──────────────────────────────────────────────
   // After every confident AI reply, check if the trigger already
@@ -1029,14 +1077,14 @@ Reply (warm, helpful, conversational):`;
             needs_approval: true,
             auto_learned: true,
             hit_count:  0,
-          }).catch(() => {});
+          });
 
           // Mark the AI log as auto-promoted
           if (aiLog?.id) {
             await supabase.from('ai_logs')
               .update({ promoted_to_kb: true, promoted_at: new Date().toISOString() })
               .eq('id', aiLog.id)
-              .catch(() => {});
+              ;
           }
         }
       }
@@ -1204,7 +1252,7 @@ app.post('/auth/register', authLimiter, async (req, res) => {
         console.warn(JSON.stringify({ level:'warn', msg:'self-referral blocked', userId:user.id }));
       } else {
         const holdUntil = new Date(Date.now() + 14*24*60*60*1000).toISOString();
-        await supabase.from('referrals').insert({ referrer_id:referrerId, referred_id:user.id, referred_signed_up:true, status:'pending', hold_until: holdUntil, ip_address: req.ip }).catch(() => {});
+        await supabase.from('referrals').insert({ referrer_id:referrerId, referred_id:user.id, referred_signed_up:true, status:'pending', hold_until: holdUntil, ip_address: req.ip });
       }
     }
 
@@ -1269,13 +1317,13 @@ app.post('/auth/login', authLimiter, async (req, res) => {
 
 // POST /auth/logout
 app.post('/auth/logout', authenticate, async (req, res) => {
-  await supabase.from('sessions').delete().eq('token', req.token).catch(() => {});
+  await supabase.from('sessions').delete().eq('token', req.token);
   return res.json({ success:true, message:'Logged out successfully.' });
 });
 
 // POST /auth/logout-all
 app.post('/auth/logout-all', authenticate, async (req, res) => {
-  await supabase.from('sessions').delete().eq('user_id', req.user.id).catch(() => {});
+  await supabase.from('sessions').delete().eq('user_id', req.user.id);
   return res.json({ success:true, message:'All sessions terminated.' });
 });
 
@@ -1497,13 +1545,30 @@ app.post('/onboarding/whatsapp', authenticate, async (req, res) => {
       updates.wa_business_account_id    = wa_business_account_id;
       updates.wa_access_token           = encrypt(wa_access_token);
     } else {
-      updates.wa_phone_number_id  = WA_PHONE_NUMBER_ID;
-      updates.wa_access_token     = encrypt(WA_ACCESS_TOKEN || '');
+      // S-06: NEVER store the platform's number/token on a tenant row. Shared mode is
+      // routed by route code + sticky map; the platform sends only on its own number.
+      updates.wa_phone_number_id     = null;
+      updates.wa_access_token        = null;
+      updates.wa_business_account_id = null;
     }
-    const { data:existing } = await supabase.from('business_settings').select('id').eq('user_id', req.user.id).single();
+    const { data:existing } = await supabase.from('business_settings').select('id,wa_route_code').eq('user_id', req.user.id).single();
+    let routeCode = existing?.wa_route_code || null;
+    if (connection_method === 'shared' && !routeCode) {
+      routeCode = existing
+        ? await assignRouteCode(supabase, req.user.id)   // race-safe: unique index + retry
+        : pickFreeRouteCode(supabase);                   // new row: insert carries the code
+      if (!routeCode) return res.status(500).json({ success:false, error:'Could not allocate a routing code. Please retry.' });
+      updates.wa_route_code = routeCode;
+    }
     if (existing) await supabase.from('business_settings').update(updates).eq('user_id', req.user.id);
     else await supabase.from('business_settings').insert({ ...updates, user_id:req.user.id, business_name:'My Business' });
-    return res.json({ success:true, message: connection_method==='shared' ? `Connected! Shared number: ${SHARED_WA_NUMBER}` : 'Your WhatsApp Business number is now connected.', data:{ connection_method, shared_number: connection_method==='shared'?SHARED_WA_NUMBER:null } });
+    return res.json({
+      success:true,
+      message: connection_method==='shared'
+        ? `Connected! Shared number: ${SHARED_WA_NUMBER}. Your routing code is #${routeCode}`
+        : 'Your WhatsApp Business number is now connected.',
+      data:{ connection_method, shared_number: connection_method==='shared'?SHARED_WA_NUMBER:null, route_code: connection_method==='shared' ? routeCode : null },
+    });
   } catch {
     return res.status(500).json({ success:false, error:'Failed to connect WhatsApp.' });
   }
@@ -1558,9 +1623,9 @@ app.post('/onboarding/apply-template', authenticate, async (req, res) => {
     if (!template_code) return res.status(400).json({ success:false, error:'template_code is required.' });
     const { data:tpl } = await supabase.from('business_type_templates').select('*').eq('code', template_code).single();
     if (!tpl) return res.status(404).json({ success:false, error:'Template not found.' });
-    if (tpl.sample_products?.length)    await supabase.from('products').insert(tpl.sample_products.map(p => ({ ...p, user_id:req.user.id }))).catch(() => {});
-    if (tpl.sample_kb_entries?.length)  await supabase.from('knowledge_base').insert(tpl.sample_kb_entries.map(e => ({ ...e, user_id:req.user.id }))).catch(() => {});
-    if (tpl.sample_settings)            await supabase.from('business_settings').upsert({ user_id:req.user.id, business_name:'My Business', ...tpl.sample_settings }).catch(() => {});
+    if (tpl.sample_products?.length)    await supabase.from('products').insert(tpl.sample_products.map(p => ({ ...p, user_id:req.user.id })));
+    if (tpl.sample_kb_entries?.length)  await supabase.from('knowledge_base').insert(tpl.sample_kb_entries.map(e => ({ ...e, user_id:req.user.id })));
+    if (tpl.sample_settings)            await supabase.from('business_settings').upsert({ user_id:req.user.id, business_name:'My Business', ...tpl.sample_settings });
     return res.json({ success:true, message:`Template "${tpl.name}" applied! Products and keywords pre-loaded.` });
   } catch {
     return res.status(500).json({ success:false, error:'Failed to apply template.' });
@@ -1574,11 +1639,18 @@ app.post('/onboarding/complete', authenticate, async (req, res) => {
     const { data:settings } = await supabase.from('business_settings').select('*').eq('user_id', req.user.id).single();
     const { data:user }     = await supabase.from('users').select('whatsapp_number').eq('id', req.user.id).single();
     if (settings && user?.whatsapp_number) {
-      await sendWAMessage({
-        phoneNumberId: settings.wa_phone_number_id, accessToken:decrypt(settings.wa_access_token),
-        to:user.whatsapp_number,
-        message:`🎉 Congratulations! Your ZAPIT bot is now LIVE for ${settings.business_name}. Your AI sales rep is ready to handle customers 24/7. Sleep well! 😴`,
-      }).catch(() => {});
+      try {
+        const creds = resolveSendCreds({
+          connectionMethod: settings.connection_method,
+          waPhoneNumberId: settings.wa_phone_number_id,
+          waAccessToken: settings.wa_access_token ? decrypt(settings.wa_access_token) : null,
+        }, { phoneNumberId: WA_PHONE_NUMBER_ID, accessToken: WA_ACCESS_TOKEN });
+        await sendWAMessage({
+          phoneNumberId: creds.phoneNumberId, accessToken: creds.accessToken,
+          to:user.whatsapp_number,
+          message:`🎉 Congratulations! Your ZAPIT bot is now LIVE for ${settings.business_name}. Your AI sales rep is ready to handle customers 24/7. Sleep well! 😴`,
+        });
+      } catch (e) { console.warn('[onboarding notify skip]', e.message); } // never fail onboarding over a notification
     }
     return res.json({ success:true, message:'Setup complete! Your AI sales rep is now live! 🚀' });
   } catch {
@@ -1637,9 +1709,33 @@ app.post('/whatsapp/test-connection', authenticate, async (req, res) => {
   }
 });
 
-// GET /whatsapp/qr-code
-app.get('/whatsapp/qr-code', authenticate, (_req, res) => {
-  return res.json({ success:true, data:{ shared_number:SHARED_WA_NUMBER, message:'Use this shared number with your customers. No Meta account needed on Free plan.', instructions:['1. Share this number with your customers','2. The AI bot responds instantly on your behalf','3. Upgrade for your own dedicated WhatsApp number'] } });
+// GET /whatsapp/qr-code — shared number + this tenant's routing code (S-06)
+app.get('/whatsapp/qr-code', authenticate, async (req, res) => {
+  try {
+    let { data:settings } = await supabase.from('business_settings').select('id,wa_route_code,connection_method').eq('user_id', req.user.id).limit(1);
+    settings = Array.isArray(settings) ? settings[0] : settings;
+    let routeCode = settings?.wa_route_code || null;
+    if (settings && !routeCode) routeCode = await assignRouteCode(supabase, req.user.id);
+    const instructions = routeCode ? [
+      `1. Give customers your code: #${routeCode}`,
+      `2. They text "${'#' + routeCode} hello" to ${SHARED_WA_NUMBER || 'our shared number'}`,
+      '3. They are remembered after the first message — no code needed again',
+      '4. Upgrade for your own dedicated WhatsApp number',
+    ] : [
+      '1. Share the shared number with your customers',
+      '2. The AI bot responds instantly on your behalf',
+      '3. Upgrade for your own dedicated WhatsApp number',
+    ];
+    return res.json({ success:true, data:{
+      shared_number: SHARED_WA_NUMBER,
+      route_code: routeCode,
+      connection_method: settings?.connection_method || 'shared',
+      message: routeCode
+        ? 'Use this shared number with your customers. Give them your routing code so messages reach your business.'
+        : 'Use this shared number with your customers. No Meta account needed on Free plan.',
+      instructions,
+    } });
+  } catch { return res.status(500).json({ success:false, error:'Failed to load shared number info.' }); }
 });
 
 // GET /whatsapp/products
@@ -1680,7 +1776,7 @@ app.post('/whatsapp/products', authenticate, async (req, res) => {
       const { count: afterCount } = await supabase.from('products').select('id',{count:'exact',head:true}).eq('user_id', req.user.id);
       const { limits: afterLimits } = await getUserSubscription(req.user.id);
       if ((afterCount||0) > afterLimits.products_limit) {
-        await supabase.from('products').delete().eq('id', data.id).catch(()=>{});
+        await supabase.from('products').delete().eq('id', data.id);
         invalidateSubscriptionCache(req.user.id);
         return res.status(403).json({ success:false, error: `Product limit (${afterLimits.products_limit}) exceeded — upgrade required. This insert was rolled back.` });
       }
@@ -1791,7 +1887,12 @@ app.patch('/whatsapp/orders/:id', authenticate, async (req, res) => {
       if (req.body.status==='confirmed')              msg = `✅ Order ${existing.order_number} confirmed! We're processing it now.`;
       if (req.body.delivery_status==='shipped')       msg = `🚚 Order ${existing.order_number} is on its way!`;
       if (req.body.delivery_status==='delivered')     msg = `🎉 Order ${existing.order_number} delivered! Thank you for shopping with us.`;
-      if (msg && s) await sendWAMessage({ phoneNumberId:s.wa_phone_number_id, accessToken:decrypt(s.wa_access_token), to:existing.customer_whatsapp, message:msg }).catch(() => {});
+      if (msg && s) {
+        try {
+          const creds = resolveSendCreds({ connectionMethod:s.connection_method, waPhoneNumberId:s.wa_phone_number_id, waAccessToken:s.wa_access_token?decrypt(s.wa_access_token):null }, { phoneNumberId:WA_PHONE_NUMBER_ID, accessToken:WA_ACCESS_TOKEN });
+          await sendWAMessage({ phoneNumberId:creds.phoneNumberId, accessToken:creds.accessToken, to:existing.customer_whatsapp, message:msg });
+        } catch (e) { console.warn('[order notify skip]', e.message); } // status change already saved
+      }
     }
     return res.json({ success:true, data, message:'Order updated!' });
   } catch { return res.status(500).json({ success:false, error:'Failed to update order.' }); }
@@ -1806,7 +1907,12 @@ app.post('/whatsapp/orders/:id/confirm-payment', authenticate, async (req, res) 
     if (order.customer_whatsapp) {
       const { data:s } = await supabase.from('business_settings').select('*').eq('user_id',req.user.id).single();
       const msg = s?.payment_received_message || `✅ Payment confirmed for order ${order.order_number}! Thank you 🙏 We're processing your order now.`;
-      if (s) await sendWAMessage({ phoneNumberId:s.wa_phone_number_id, accessToken:decrypt(s.wa_access_token), to:order.customer_whatsapp, message:msg }).catch(() => {});
+      if (s) {
+        try {
+          const creds = resolveSendCreds({ connectionMethod:s.connection_method, waPhoneNumberId:s.wa_phone_number_id, waAccessToken:s.wa_access_token?decrypt(s.wa_access_token):null }, { phoneNumberId:WA_PHONE_NUMBER_ID, accessToken:WA_ACCESS_TOKEN });
+          await sendWAMessage({ phoneNumberId:creds.phoneNumberId, accessToken:creds.accessToken, to:order.customer_whatsapp, message:msg });
+        } catch (e) { console.warn('[payment notify skip]', e.message); } // payment already recorded
+      }
     }
     return res.json({ success:true, message:'Payment confirmed and customer notified!' });
   } catch { return res.status(500).json({ success:false, error:'Failed to confirm payment.' }); }
@@ -1820,7 +1926,12 @@ app.post('/whatsapp/orders/:id/cancel', authenticate, async (req, res) => {
     await supabase.from('orders').update({ status:'cancelled', updated_at:new Date().toISOString() }).eq('id',req.params.id);
     if (order.customer_whatsapp) {
       const { data:s } = await supabase.from('business_settings').select('*').eq('user_id',req.user.id).single();
-      if (s) await sendWAMessage({ phoneNumberId:s.wa_phone_number_id, accessToken:decrypt(s.wa_access_token), to:order.customer_whatsapp, message:`We're sorry — order ${order.order_number} has been cancelled. ${req.body.reason||'Please contact us if you have questions.'}` }).catch(() => {});
+      if (s) {
+        try {
+          const creds = resolveSendCreds({ connectionMethod:s.connection_method, waPhoneNumberId:s.wa_phone_number_id, waAccessToken:s.wa_access_token?decrypt(s.wa_access_token):null }, { phoneNumberId:WA_PHONE_NUMBER_ID, accessToken:WA_ACCESS_TOKEN });
+          await sendWAMessage({ phoneNumberId:creds.phoneNumberId, accessToken:creds.accessToken, to:order.customer_whatsapp, message:`We're sorry — order ${order.order_number} has been cancelled. ${req.body.reason||'Please contact us if you have questions.'}` });
+        } catch (e) { console.warn('[cancel notify skip]', e.message); } // cancellation already saved
+      }
     }
     return res.json({ success:true, message:'Order cancelled.' });
   } catch { return res.status(500).json({ success:false, error:'Failed to cancel order.' }); }
@@ -1998,12 +2109,19 @@ app.post('/whatsapp/broadcasts', authenticate, async (req, res) => {
     if (bErr) throw bErr;
     if (!scheduled_for) {
       let sentCount=0;
+      let creds = null;
+      try {
+        creds = resolveSendCreds({
+          connectionMethod: settings?.connection_method,
+          waPhoneNumberId: settings?.wa_phone_number_id,
+          waAccessToken: settings?.wa_access_token ? decrypt(settings.wa_access_token) : null,
+        }, { phoneNumberId: WA_PHONE_NUMBER_ID, accessToken: WA_ACCESS_TOKEN });
+      } catch (e) { creds = null; }
       for (const c of contacts) {
         let r;
         try {
-          const tok = settings?.wa_access_token ? decrypt(settings.wa_access_token) : null;
-          if (!settings?.wa_phone_number_id || !tok) throw new Error('Missing tenant WhatsApp credentials');
-          r = await sendWAMessage({ phoneNumberId: settings.wa_phone_number_id, accessToken: tok, to:c.phone, message:message.replace('{name}',c.name||'there') });
+          if (!creds) throw new Error('Missing tenant WhatsApp credentials');
+          r = await sendWAMessage({ phoneNumberId: creds.phoneNumberId, accessToken: creds.accessToken, to:c.phone, message:message.replace('{name}',c.name||'there') });
         } catch (e) { r = { success:false, error: e.message }; }
         if (r.success) sentCount++;
         await sleep(120); // ~8 msg/sec rate limit
@@ -2059,9 +2177,12 @@ app.post('/whatsapp/conversations/:id/reply', authenticate, async (req, res) => 
     const { data:settings } = await supabase.from('business_settings').select('*').eq('user_id',req.user.id).single();
     let result;
     try {
-      const tok2 = settings?.wa_access_token ? decrypt(settings.wa_access_token) : null;
-      if (!settings?.wa_phone_number_id || !tok2) throw new Error('Missing tenant WhatsApp credentials');
-      result = await sendWAMessage({ phoneNumberId: settings.wa_phone_number_id, accessToken: tok2, to:conv.contacts?.phone, message });
+      const creds = resolveSendCreds({
+        connectionMethod: settings?.connection_method,
+        waPhoneNumberId: settings?.wa_phone_number_id,
+        waAccessToken: settings?.wa_access_token ? decrypt(settings.wa_access_token) : null,
+      }, { phoneNumberId: WA_PHONE_NUMBER_ID, accessToken: WA_ACCESS_TOKEN });
+      result = await sendWAMessage({ phoneNumberId: creds.phoneNumberId, accessToken: creds.accessToken, to:conv.contacts?.phone, message });
     } catch (e) {
       return res.status(400).json({ success:false, error: e.message });
     }
@@ -2139,60 +2260,88 @@ app.post('/webhook/whatsapp', webhookLimiter, async (req, res) => {
     else if (['image','video','document','audio'].includes(msgType)) msgText = message[msgType]?.caption||`[${msgType} received]`;
     if (!msgText) return;
 
-    // Find business by WhatsApp phone number ID
-    const { data:settings } = await supabase.from('business_settings')
-      .select('*').eq('wa_phone_number_id', phoneNumberId).eq('auto_reply',true).single()
-      .catch(() => ({ data:null }));
+    // ── 4. Deterministic tenant resolution (S-06) — never an arbitrary tenant ──
+    // Order: dedicated number → sticky customer mapping → #CODE discriminator.
+    // Unmatched/ambiguous messages are never processed on behalf of any business.
+    const routing = await resolveTenantForInbound({
+      db: supabase, phoneNumberId, platformPhoneNumberId: WA_PHONE_NUMBER_ID,
+      customerPhone: from, messageText: msgText,
+    });
 
-    // If no individual business, try shared connection
-    let businessSettings = settings;
-    if (!businessSettings) {
-      const { data:shared } = await supabase.from('business_settings')
-        .select('*').eq('connection_method','shared').eq('auto_reply',true).limit(1);
-      if (shared?.length) businessSettings = shared[0];
+    if (routing.via === 'ambiguous_individual' || routing.via === 'ambiguous_code') {
+      console.error(JSON.stringify({ level:'error', msg:'wa routing ambiguous — message refused', via:routing.via, phoneNumberId, from, code:routing.code }));
+      return;
     }
-    if (!businessSettings) return;
-    const businessUserId = businessSettings.user_id;
+
+    if (!routing.tenant) {
+      console.warn(JSON.stringify({ level:'warn', msg:'wa routing: no tenant', via:routing.via, phoneNumberId, from, code:routing.code }));
+      // Help a stranger on the shared number find their business (throttled, non-fatal).
+      await maybeSendRoutingGuidance(routing, phoneNumberId, from);
+      return;
+    }
+
+    const businessSettings = routing.tenant;
+    const businessUserId   = businessSettings.user_id;
+    msgText = routing.body || msgText;
+
+    // Remember this customer for the shared number so later messages need no code.
+    if (routing.via === 'code') {
+      await upsertWaCustomerTenant(supabase, { platformPhoneNumberId: phoneNumberId, customerPhone: from, userId: businessUserId });
+    }
 
     // Upsert contact
     let { data:contactRecord } = await supabase.from('contacts')
-      .select('*').eq('user_id',businessUserId).eq('phone',from).single().catch(() => ({ data:null }));
+      .select('*').eq('user_id',businessUserId).eq('phone',from).single();
     if (!contactRecord) {
-      const { data:nc } = await supabase.from('contacts').insert({ user_id:businessUserId, name:customerName, phone:from, whatsapp_id:from, first_message_date:new Date().toISOString(), last_message_date:new Date().toISOString(), message_count:1, segment:'lead' }).select().single().catch(() => ({ data:null }));
+      const { data:nc } = await supabase.from('contacts').insert({ user_id:businessUserId, name:customerName, phone:from, whatsapp_id:from, first_message_date:new Date().toISOString(), last_message_date:new Date().toISOString(), message_count:1, segment:'lead' }).select().single();
       contactRecord = nc;
     } else {
-      await supabase.from('contacts').update({ last_message_date:new Date().toISOString(), message_count:(contactRecord.message_count||0)+1, name:contactRecord.name||customerName }).eq('id',contactRecord.id).catch(() => {});
+      await supabase.from('contacts').update({ last_message_date:new Date().toISOString(), message_count:(contactRecord.message_count||0)+1, name:contactRecord.name||customerName }).eq('id',contactRecord.id);
     }
     if (!contactRecord || contactRecord.is_blocked || contactRecord.opted_out) return;
 
     // Upsert conversation
     let { data:conv } = await supabase.from('conversations')
-      .select('*').eq('user_id',businessUserId).eq('contact_id',contactRecord.id).eq('status','open').single().catch(() => ({ data:null }));
+      .select('*').eq('user_id',businessUserId).eq('contact_id',contactRecord.id).eq('status','open').single();
     if (!conv) {
-      const { data:nc } = await supabase.from('conversations').insert({ user_id:businessUserId, contact_id:contactRecord.id, whatsapp_conversation_id:`${from}_${businessUserId}`, last_message_at:new Date().toISOString() }).select().single().catch(() => ({ data:null }));
+      const { data:nc } = await supabase.from('conversations').insert({ user_id:businessUserId, contact_id:contactRecord.id, whatsapp_conversation_id:`${from}_${businessUserId}`, last_message_at:new Date().toISOString() }).select().single();
       conv = nc;
     } else {
-      await supabase.from('conversations').update({ last_message_at:new Date().toISOString() }).eq('id',conv.id).catch(() => {});
+      await supabase.from('conversations').update({ last_message_at:new Date().toISOString() }).eq('id',conv.id);
     }
 
     // Log inbound message
-    await supabase.from('messages').insert({ conversation_id:conv?.id, whatsapp_message_id:msgId, direction:'inbound', type:msgType, content:msgText, status:'received' }).catch(() => {});
+    await supabase.from('messages').insert({ conversation_id:conv?.id, whatsapp_message_id:msgId, direction:'inbound', type:msgType, content:msgText, status:'received' });
+
+    // Auto-reply off → the inbox still records the message, but nothing is sent.
+    if (businessSettings.auto_reply === false) {
+      console.log(JSON.stringify({ level:'info', msg:'wa auto_reply off — inbound stored only', userId:businessUserId }));
+      return;
+    }
 
     // Check reply limit
     const { limits } = await getUserSubscription(businessUserId);
     if ((businessSettings.reply_count||0) >= limits.whatsapp_replies) return;
 
+    // Explicit send channel (S-06/W-07): tenant's own number, or the platform's
+    // shared number for shared-mode tenants. Never an implicit fallback.
+    let creds = null;
+    try {
+      creds = resolveSendCreds({
+        connectionMethod: businessSettings.connection_method,
+        waPhoneNumberId: businessSettings.wa_phone_number_id,
+        waAccessToken: businessSettings.wa_access_token ? decrypt(businessSettings.wa_access_token) : null,
+      }, { phoneNumberId: WA_PHONE_NUMBER_ID, accessToken: WA_ACCESS_TOKEN });
+    } catch (e) { console.warn('[WA send channel unavailable]', e.message); }
+
     // Welcome message for first contact
     if ((contactRecord.message_count||0) <= 1 && businessSettings.welcome_message) {
-      try {
-        const wTok = businessSettings.wa_access_token ? decrypt(businessSettings.wa_access_token) : null;
-        if (!businessSettings.wa_phone_number_id || !wTok) throw new Error('Missing tenant WA creds for welcome');
-        await sendWAMessage({ phoneNumberId: businessSettings.wa_phone_number_id, accessToken: wTok, to:from, message:businessSettings.welcome_message.replace('{name}',customerName) });
-      } catch (e) { console.warn('[WA welcome skip]', e.message); }
-      try {
-        const wTok2 = businessSettings.wa_access_token ? decrypt(businessSettings.wa_access_token) : null;
-        if (businessSettings.wa_phone_number_id && wTok2) await markWARead(msgId, businessSettings.wa_phone_number_id, wTok2);
-      } catch {}
+      if (creds) {
+        try {
+          await sendWAMessage({ phoneNumberId: creds.phoneNumberId, accessToken: creds.accessToken, to:from, message:businessSettings.welcome_message.replace('{name}',customerName) });
+        } catch (e) { console.warn('[WA welcome skip]', e.message); }
+        await markWARead(msgId, creds.phoneNumberId, creds.accessToken);
+      }
       return;
     }
 
@@ -2200,17 +2349,14 @@ app.post('/webhook/whatsapp', webhookLimiter, async (req, res) => {
     const { response:aiReply } = await processWAMessage({ businessUserId, customerPhone:from, customerMessage:msgText, businessSettings, conversationId:conv?.id });
 
     // Send reply & log it
-    try {
-      const aTok = businessSettings.wa_access_token ? decrypt(businessSettings.wa_access_token) : null;
-      if (!businessSettings.wa_phone_number_id || !aTok) throw new Error('Missing tenant WA creds for AI reply');
-      await sendWAMessage({ phoneNumberId: businessSettings.wa_phone_number_id, accessToken: aTok, to:from, message:aiReply });
-    } catch (e) { console.warn('[WA AI reply skip]', e.message); }
-    await supabase.from('messages').insert({ conversation_id:conv?.id, direction:'outbound', type:'text', content:aiReply, status:'sent', ai_processed:true }).catch(() => {});
-    await supabase.from('business_settings').update({ reply_count:(businessSettings.reply_count||0)+1 }).eq('user_id',businessUserId).catch(() => {});
-    try {
-      const wTok3 = businessSettings.wa_access_token ? decrypt(businessSettings.wa_access_token) : null;
-      if (businessSettings.wa_phone_number_id && wTok3) await markWARead(msgId, businessSettings.wa_phone_number_id, wTok3);
-    } catch {}
+    if (creds) {
+      try {
+        await sendWAMessage({ phoneNumberId: creds.phoneNumberId, accessToken: creds.accessToken, to:from, message:aiReply });
+      } catch (e) { console.warn('[WA AI reply skip]', e.message); }
+    }
+    await supabase.from('messages').insert({ conversation_id:conv?.id, direction:'outbound', type:'text', content:aiReply, status:'sent', ai_processed:true });
+    await supabase.from('business_settings').update({ reply_count:(businessSettings.reply_count||0)+1 }).eq('user_id',businessUserId);
+    if (creds) await markWARead(msgId, creds.phoneNumberId, creds.accessToken);
 
   } catch (err) { console.error('[WA WEBHOOK ERROR]', err.message); }
 });
@@ -2327,7 +2473,7 @@ app.post('/content/generate/text', authenticate, contentLimiter, async (req, res
   try {
     const { topic, platform='instagram', tone='professional', language='en', product_id } = req.body;
     if (!topic) return res.status(400).json({ success:false, error:'Topic is required.' });
-    const { data:bv }  = await supabase.from('brand_voice').select('*').eq('user_id',req.user.id).single().catch(() => ({ data:null }));
+    const { data:bv }  = await supabase.from('brand_voice').select('*').eq('user_id',req.user.id).single();
     let product = null;
     if (product_id) { const { data:p } = await supabase.from('products').select('*').eq('id',product_id).eq('user_id',req.user.id).single(); product = p; }
     const result = await generateCaptionSafe({ topic, platform, tone, language, brandVoice:bv, product });
@@ -2343,7 +2489,7 @@ app.post('/content/generate/image', authenticate, contentLimiter, async (req, re
     if (!topic) return res.status(400).json({ success:false, error:'Topic is required.' });
     const { limits } = await getUserSubscription(req.user.id);
     if (!limits.ai_image_enabled) return res.status(403).json({ success:false, error:'AI image generation is not available on your plan.' });
-    const { data:bv } = await supabase.from('brand_voice').select('*').eq('user_id',req.user.id).single().catch(() => ({ data:null }));
+    const { data:bv } = await supabase.from('brand_voice').select('*').eq('user_id',req.user.id).single();
     let product = null;
     if (product_id) { const { data:p } = await supabase.from('products').select('*').eq('id',product_id).eq('user_id',req.user.id).single(); product = p; }
     const [captionResult, imageUrl] = await Promise.all([ generateCaptionSafe({ topic, platform, tone, language, brandVoice:bv, product }), generateAIImage({ topic, aspectRatio:aspect_ratio, style }) ]);
@@ -2360,7 +2506,7 @@ app.post('/content/generate/video', authenticate, contentLimiter, async (req, re
     if (!topic) return res.status(400).json({ success:false, error:'Topic is required.' });
     const { limits } = await getUserSubscription(req.user.id);
     if (!limits.ai_video_enabled) return res.status(403).json({ success:false, error:'AI video generation requires Creator plan or above.' });
-    const { data:bv } = await supabase.from('brand_voice').select('*').eq('user_id',req.user.id).single().catch(() => ({ data:null }));
+    const { data:bv } = await supabase.from('brand_voice').select('*').eq('user_id',req.user.id).single();
     let product = null;
     if (product_id) { const { data:p } = await supabase.from('products').select('*').eq('id',product_id).eq('user_id',req.user.id).single(); product = p; }
     const captionResult = await generateCaptionSafe({ topic, platform, tone, language, brandVoice:bv, product });
@@ -2400,7 +2546,7 @@ app.post('/content/generate/caption', authenticate, contentLimiter, async (req, 
   try {
     const { topic, platform='instagram', tone='professional', language='en', context } = req.body;
     if (!topic&&!context) return res.status(400).json({ success:false, error:'Topic or context is required.' });
-    const { data:bv } = await supabase.from('brand_voice').select('*').eq('user_id',req.user.id).single().catch(() => ({ data:null }));
+    const { data:bv } = await supabase.from('brand_voice').select('*').eq('user_id',req.user.id).single();
     const result = await generateCaptionSafe({ topic:topic||context, platform, tone, language, brandVoice:bv });
     return res.json({ success:true, data:result, message:'Caption generated!' });
   } catch { return res.status(500).json({ success:false, error:'Failed to generate caption.' }); }
@@ -2412,7 +2558,7 @@ app.post('/content/regenerate/:id', authenticate, contentLimiter, async (req, re
     const { data:item } = await supabase.from('content_items').select('*').eq('id',req.params.id).eq('user_id',req.user.id).single();
     if (!item) return res.status(404).json({ success:false, error:'Content not found.' });
     const { platform='instagram', tone='professional', language='en' } = req.body;
-    const { data:bv } = await supabase.from('brand_voice').select('*').eq('user_id',req.user.id).single().catch(() => ({ data:null }));
+    const { data:bv } = await supabase.from('brand_voice').select('*').eq('user_id',req.user.id).single();
     const result = await generateCaptionSafe({ topic:item.topic, platform, tone, language, brandVoice:bv });
     const { data:updated } = await supabase.from('content_items').update({ caption:result.caption, hashtags:result.hashtags, updated_at:new Date().toISOString() }).eq('id',req.params.id).select().single();
     return res.json({ success:true, data:{ ...updated, ...result }, message:'Regenerated with a fresh variation!' });
@@ -2640,7 +2786,7 @@ app.delete('/content/calendar/automations/:id', authenticate, async (req, res) =
 // GET /content/brand-voice
 app.get('/content/brand-voice', authenticate, async (req, res) => {
   try {
-    const { data } = await supabase.from('brand_voice').select('*').eq('user_id',req.user.id).single().catch(() => ({ data:null }));
+    const { data } = await supabase.from('brand_voice').select('*').eq('user_id',req.user.id).single();
     return res.json({ success:true, data:data||null });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch brand voice.' }); }
 });
@@ -2652,7 +2798,7 @@ app.patch('/content/brand-voice', authenticate, async (req, res) => {
     if (!limits.brand_voice_enabled) return res.status(403).json({ success:false, error:'Brand Voice is available on Creator plan and above.' });
     const payload = { ...req.body, user_id:req.user.id, updated_at:new Date().toISOString() };
     delete payload.id;
-    const { data:existing } = await supabase.from('brand_voice').select('id').eq('user_id',req.user.id).single().catch(() => ({ data:null }));
+    const { data:existing } = await supabase.from('brand_voice').select('id').eq('user_id',req.user.id).single();
     const result = existing
       ? await supabase.from('brand_voice').update(payload).eq('user_id',req.user.id).select().single()
       : await supabase.from('brand_voice').insert(payload).select().single();
@@ -2696,7 +2842,7 @@ app.post('/content/templates/:id/use', authenticate, contentLimiter, async (req,
     const { data:tpl } = await supabase.from('content_templates').select('*').eq('id',req.params.id).single();
     if (!tpl) return res.status(404).json({ success:false, error:'Template not found.' });
     const { topic, platform='instagram', language='en' } = req.body;
-    const { data:bv } = await supabase.from('brand_voice').select('*').eq('user_id',req.user.id).single().catch(() => ({ data:null }));
+    const { data:bv } = await supabase.from('brand_voice').select('*').eq('user_id',req.user.id).single();
     const result = await generateCaptionSafe({ topic:topic||tpl.name, platform, tone:'professional', language, brandVoice:bv });
     const { data:item } = await supabase.from('content_items').insert({ user_id:req.user.id, type:'image', topic:topic||tpl.name, caption:result.caption, hashtags:result.hashtags||tpl.hashtag_groups?.[0]||[], generation_status:'completed' }).select().single();
     await supabase.from('content_templates').update({ total_uses:(tpl.total_uses||0)+1 }).eq('id',req.params.id);
@@ -2919,7 +3065,7 @@ app.get('/subscription/invoices', authenticate, async (req, res) => {
 app.get('/referrals/stats', authenticate, async (req, res) => {
   try {
     const [{ data:stats },{ data:user }] = await Promise.all([
-      supabase.from('affiliate_stats').select('*').eq('user_id',req.user.id).single().catch(() => ({ data:null })),
+      supabase.from('affiliate_stats').select('*').eq('user_id',req.user.id).single(),
       supabase.from('users').select('referral_code').eq('id',req.user.id).single(),
     ]);
     return res.json({ success:true, data:{ referral_code:user?.referral_code, referral_link:`${FRONTEND_URL}?ref=${user?.referral_code}`, stats:stats||{ total_referrals:0, successful_referrals:0, total_earnings:0 } } });
@@ -3007,7 +3153,7 @@ app.post('/templates/business/:code/apply', authenticate, async (req, res) => {
           is_active:   true,
         }));
       if (validProducts.length) {
-        await supabase.from('products').insert(validProducts).catch(e => console.error('[TEMPLATE PRODUCTS]', e.message));
+        await supabase.from('products').insert(validProducts).then(undefined, e => console.error('[TEMPLATE PRODUCTS]', e.message));
       }
     }
 
@@ -3024,7 +3170,7 @@ app.post('/templates/business/:code/apply', authenticate, async (req, res) => {
           is_active: true,
         }));
       if (validKb.length) {
-        await supabase.from('knowledge_base').insert(validKb).catch(e => console.error('[TEMPLATE KB]', e.message));
+        await supabase.from('knowledge_base').insert(validKb).then(undefined, e => console.error('[TEMPLATE KB]', e.message));
       }
     }
 
@@ -3038,7 +3184,7 @@ app.post('/templates/business/:code/apply', authenticate, async (req, res) => {
         language_preference: s.language_preference || 'en',
         welcome_message:     s.welcome_message || null,
         payment_methods:     s.payment_methods || ['bank_transfer'],
-      }, { onConflict: 'user_id' }).catch(e => console.error('[TEMPLATE SETTINGS]', e.message));
+      }, { onConflict: 'user_id' }).then(undefined, e => console.error('[TEMPLATE SETTINGS]', e.message));
     }
 
     return res.json({ success:true, message:`"${tpl.name}" template applied! Check your Products and Knowledge Base.` });
@@ -3243,7 +3389,7 @@ app.post('/webhook/paystack', webhookLimiter, async (req, res) => {
       try {
         const { data: ev } = await supabase.from('webhook_events').select('id').eq('provider','paystack').eq('event_id', String(reference)).single();
         if (ev) { console.log(JSON.stringify({ level:'info', msg:'paystack duplicate webhook_events', reference })); return; }
-        supabase.from('webhook_events').insert({ provider:'paystack', event_id:String(reference), payload:event, received_at:new Date().toISOString() }).then(()=>{}).catch(()=>{});
+        supabase.from('webhook_events').insert({ provider:'paystack', event_id:String(reference), payload:event, received_at:new Date().toISOString() }).then(()=>{});
       } catch {}
 
       const verify = await verifyPaystack(reference);
@@ -3260,8 +3406,8 @@ app.post('/webhook/paystack', webhookLimiter, async (req, res) => {
           htmlContent:`<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px"><h1 style="color:#6366F1">⚡ ZAPIT</h1><h2>Payment Confirmed! 🎉</h2><p>Hi ${user.full_name||'there'},</p><p>Your payment of <strong>${currency} ${amountPaid.toLocaleString()}</strong> was successful.</p><p>You're now on the <strong>${plan.toUpperCase()}</strong> plan.</p><p>Reference: ${reference}</p><a href="${FRONTEND_URL}/dashboard" style="background:#6366F1;color:white;padding:12px 24px;text-decoration:none;border-radius:8px;display:inline-block;margin-top:16px">Go to Dashboard →</a></div>` });
       }
       // Referral reward
-      const { data:ref } = await supabase.from('referrals').select('*').eq('referred_id',userId).eq('status','pending').single().catch(() => ({ data:null }));
-      if (ref) await supabase.from('referrals').update({ referred_upgraded:true, referred_plan:plan, status:'completed' }).eq('id',ref.id).catch(() => {});
+      const { data:ref } = await supabase.from('referrals').select('*').eq('referred_id',userId).eq('status','pending').single();
+      if (ref) await supabase.from('referrals').update({ referred_upgraded:true, referred_plan:plan, status:'completed' }).eq('id',ref.id);
     }
   } catch (err) { console.error('[PAYSTACK WEBHOOK]', err.message); }
 });
@@ -3272,7 +3418,7 @@ app.post('/webhook/tiktok', webhookLimiter, async (req, res) => {
   try {
     const { event, data } = req.body;
     if (event==='video.publish.complete'&&data?.publish_id) {
-      await supabase.from('posts').update({ tiktok_post_id:data.share_id||data.publish_id, tiktok_post_url:data.share_url||null, status:'published', published_at:new Date().toISOString() }).eq('tiktok_post_id',data.publish_id).catch(() => {});
+      await supabase.from('posts').update({ tiktok_post_id:data.share_id||data.publish_id, tiktok_post_url:data.share_url||null, status:'published', published_at:new Date().toISOString() }).eq('tiktok_post_id',data.publish_id);
     }
   } catch (err) { console.error('[TIKTOK WEBHOOK]', err.message); }
 });
@@ -3420,9 +3566,11 @@ cron.schedule('0 2 * * *', async () => {
       await supabase.from('subscriptions').update({ status:'expired' }).eq('id',sub.id);
       await supabase.from('subscriptions').insert({ user_id:sub.user_id, plan:'free', status:'active', billing_cycle:'free', amount_paid:0 });
       // Notify user
-      const { data:user } = await supabase.from('users').select('email,full_name').eq('id',sub.user_id).single().catch(() => ({ data:null }));
+      const { data:user } = await supabase.from('users').select('email,full_name').eq('id',sub.user_id).single();
       if (user) {
-        await sendEmail({ to:user.email, toName:user.full_name, subject:'Your ZAPIT subscription has expired', htmlContent:`<div style="font-family:Arial;max-width:600px;margin:0 auto;padding:20px"><h1 style="color:#6366F1">⚡ ZAPIT</h1><h2>Subscription Expired</h2><p>Hi ${user.full_name||'there'},</p><p>Your ${sub.plan} plan has expired. Your account has been moved to the Free plan.</p><p>Renew now to restore all your features!</p><a href="${FRONTEND_URL}/pricing" style="background:#6366F1;color:white;padding:12px 24px;text-decoration:none;border-radius:8px;display:inline-block;margin-top:16px">Renew Subscription →</a></div>` }).catch(() => {});
+        try {
+          await sendEmail({ to:user.email, toName:user.full_name, subject:'Your ZAPIT subscription has expired', htmlContent:`<div style="font-family:Arial;max-width:600px;margin:0 auto;padding:20px"><h1 style="color:#6366F1">⚡ ZAPIT</h1><h2>Subscription Expired</h2><p>Hi ${user.full_name||'there'},</p><p>Your ${sub.plan} plan has expired. Your account has been moved to the Free plan.</p><p>Renew now to restore all your features!</p><a href="${FRONTEND_URL}/pricing" style="background:#6366F1;color:white;padding:12px 24px;text-decoration:none;border-radius:8px;display:inline-block;margin-top:16px">Renew Subscription →</a></div>` });
+        } catch (e) { console.warn('[expiry notify skip]', e.message); }
       }
     }
     console.log(`[CRON] Expired ${expired.length} subscription(s).`);

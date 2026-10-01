@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ZAPIT — Security smoke check for CI (Phases 1–6.2)
+// ZAPIT — Security smoke check for CI (Phases 1–6.3)
 // Fails (exit 1) if any critical invariant is violated.
 // No external deps, runs on Node 18+.
 
@@ -162,10 +162,47 @@ try {
   else pass('Phase 6.2 migration present');
 } catch { fail('Phase 6.2 migration file missing'); }
 
+// ── 21. Phase 6.3 — Supabase v2 builders have no .catch (W-14) ─────
+// `.catch()` on a PostgREST builder is not a function → every such call threw a
+// TypeError at runtime (the WhatsApp webhook was dead on arrival). Enforce zero.
+const brokenCatch = (indexJs.match(/\.catch\(/g) || []).length;
+if (brokenCatch > 0) fail(`Found ${brokenCatch} .catch(...) on Supabase builders — not a function in supabase-js v2 (W-14)`);
+else pass('No .catch(...) on Supabase builders (W-14)');
+
+// ── 22. Phase 6.3 — Tenant routing is deterministic & fail-closed (S-06) ──
+if (!indexJs.includes('resolveTenantForInbound(')) fail('Webhook does not use resolveTenantForInbound (S-06)');
+else pass('Webhook uses deterministic tenant resolver (S-06)');
+if (indexJs.includes(".eq('connection_method','shared').eq('auto_reply',true).limit(1)")) fail('Arbitrary shared tenant .limit(1) still present (S-06)');
+else pass('No arbitrary shared tenant selection (S-06)');
+if (indexJs.includes('updates.wa_phone_number_id  = WA_PHONE_NUMBER_ID') || indexJs.includes('updates.wa_phone_number_id = WA_PHONE_NUMBER_ID')) fail('Shared connect still stores the platform number on tenant rows (S-06)');
+else pass('Shared connect does not store platform number/token (S-06)');
+if (!indexJs.includes('maybeSendRoutingGuidance(')) fail('Unmatched shared messages have no guidance reply (S-06)');
+else pass('Unmatched shared messages get throttled guidance (S-06)');
+if (!indexJs.includes('resolveSendCreds(')) fail('Outbound sends do not use explicit channel resolution (S-06/W-07)');
+else pass('Outbound sends use explicit channel resolution (S-06/W-07)');
+
+// ── 23. Phase 6.3 — routing util + migration ───────────────────────
+try {
+  const tr = fs.readFileSync('src/utils/tenantRouting.js','utf8');
+  if (!tr.includes('generateRouteCode') || !tr.includes('extractRouteCode')) fail('tenantRouting util missing code helpers (S-06)');
+  else pass('tenantRouting util present (S-06)');
+  if (!tr.includes('ambiguous_individual') || !tr.includes('ambiguous_code')) fail('tenantRouting util lacks ambiguity refusal (S-06)');
+  else pass('tenantRouting refuses ambiguous routing (S-06)');
+  if (!tr.includes('platform-shared')) fail('tenantRouting util lacks explicit shared channel (S-06)');
+  else pass('tenantRouting has explicit shared channel (S-06)');
+} catch { fail('src/utils/tenantRouting.js missing (S-06)'); }
+try {
+  const mig = fs.readFileSync('supabase/migrations/20261004_phase6_03_shared_routing.sql','utf8');
+  if (!mig.includes('wa_customer_tenant') || !mig.includes('wa_route_code') || !mig.includes('shared_guidance')) fail('Phase 6.3 migration missing routing tables/column');
+  else pass('Phase 6.3 migration present');
+  if (!mig.includes('idx_business_settings_wa_number_individual') || !mig.includes('idx_business_settings_route_code')) fail('Phase 6.3 migration missing unique indexes');
+  else pass('Phase 6.3 unique indexes present');
+} catch { fail('Phase 6.3 migration file missing'); }
+
 console.log('');
 if (fails) {
-  console.error(`\n${fails} check(s) failed — Phase 6.2 not done.`);
+  console.error(`\n${fails} check(s) failed — Phase 6.3 not done.`);
   process.exit(1);
 } else {
-  console.log('All security checks passed (Phases 1–6.2). ✅');
+  console.log('All security checks passed (Phases 1–6.3). ✅');
 }

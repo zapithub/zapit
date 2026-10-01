@@ -2706,6 +2706,10 @@ table.data-table tbody tr.clickable { cursor: pointer; }
         '<h4 class="mb-1">📱 Shared WhatsApp Number</h4>' +
         '<p class="body-sm text-muted mb-2">' + escapeHtml(d.message) + '</p>' +
         '<div class="badge badge-primary mb-2" style="font-size:15px;padding:8px 16px;">' + escapeHtml(d.shared_number) + '</div>' +
+        (d.route_code
+          ? '<p class="body-sm mb-2">Your routing code: <strong style="font-family:monospace;font-size:15px;">#' + escapeHtml(String(d.route_code)) + '</strong></p>' +
+            '<p class="body-sm text-muted mb-2">Customers text <strong>#' + escapeHtml(String(d.route_code)) + '</strong> to the shared number the first time — they are remembered after that.</p>'
+          : '') +
         '<ol class="body-sm text-muted" style="padding-left:18px;">' + (d.instructions || []).map(function (i) { return '<li>' + escapeHtml(i.replace(/^\d+\.\s*/, '')) + '</li>'; }).join('') + '</ol>';
     } catch (err) {
       el.innerHTML = '<p class="body-sm text-muted">Could not load shared number info.</p>';

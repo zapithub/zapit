@@ -15,6 +15,7 @@ Copy `.env.example` to `.env`. Never commit `.env`.
 | `WA_*` | No | — | WhatsApp Cloud API; mock if missing |
 | `WA_APP_SECRET` | **Yes (prod)** | falls back to `META_APP_SECRET` | Meta app secret — verifies `X-Hub-Signature-256` on `POST /webhook/whatsapp` (S-05). Missing in production → webhook rejects 503 |
 | `WA_VERIFY_TOKEN` | **Yes (prod)** | weak default | Meta GET handshake token; must be a strong unique value in production (constant-time compare) |
+| `SHARED_WA_NUMBER` | No | — | Display value for the Free-plan shared number (routing uses `WA_PHONE_NUMBER_ID` + per-tenant route codes, S-06) |
 | `HF_API_KEY` | No | — | Hugging Face; fallback to template |
 | `REPLICATE_API_KEY` | No | — | Replicate; fallback to stock image |
 | `PAYSTACK_SECRET_KEY` | No | — | Required for payments |
