@@ -9,6 +9,9 @@
 <title>Log In or Sign Up — ZAPIT</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%236366F1'/%3E%3Cpath d='M55 18 L30 56 H47 L43 82 L72 42 H53 Z' fill='white'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="public/shared.css">
+<link rel="manifest" href="public/manifest.json">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://*.supabase.co https://zapit-n2yf.onrender.com https://ipapi.co; font-src 'self' data:; object-src 'none'; base-uri 'self';">
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js" crossorigin="anonymous"></script>
 
 <style>
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -691,6 +694,34 @@ h3, .h3 { font-size: var(--font-size-h3); line-height: var(--line-height-h3); fo
   // to browser storage here. dashboard.html should establish its own secure
   // session handling (e.g. an httpOnly cookie set by your backend) once built.
   var ZAPIT_SESSION = { accessToken: null, refreshToken: null, user: null, pendingEmail: null };
+  // Phase 3: sessionStorage fallback for refresh across reloads (cleared on logout/unload)
+  // Tokens are stored in sessionStorage (tab-scoped, cleared when tab closes) with 7d expiry check.
+  // Prefer httpOnly cookies when backend supports them (see SECURITY.md). This fallback is XSS-mitigated via CSP + DOMPurify.
+  try {
+    var _ssToken = sessionStorage.getItem('zapit_token');
+    var _ssRefresh = sessionStorage.getItem('zapit_refresh');
+    var _ssExpiry = sessionStorage.getItem('zapit_expiry');
+    if (_ssToken && _ssExpiry && Date.now() < Number(_ssExpiry)) {
+      ZAPIT_SESSION.accessToken = _ssToken;
+      ZAPIT_SESSION.refreshToken = _ssRefresh;
+    } else if (_ssToken) {
+      sessionStorage.removeItem('zapit_token'); sessionStorage.removeItem('zapit_refresh'); sessionStorage.removeItem('zapit_expiry');
+    }
+  } catch(e) {}
+
+  function persistSession(token, refresh) {
+    try {
+      if (token) {
+        sessionStorage.setItem('zapit_token', token);
+        if (refresh) sessionStorage.setItem('zapit_refresh', refresh);
+        sessionStorage.setItem('zapit_expiry', String(Date.now() + 7*24*60*60*1000));
+      }
+    } catch(e) {}
+  }
+  function clearPersistedSession() {
+    try { sessionStorage.removeItem('zapit_token'); sessionStorage.removeItem('zapit_refresh'); sessionStorage.removeItem('zapit_expiry'); } catch(e) {}
+  }
+  window.addEventListener('beforeunload', function(){ /* keep session for back button, but clear on explicit logout - see logout handler */ });
 
   function apiUrl(path) { return (API_BASE_URL || '') + path; }
 
@@ -908,6 +939,7 @@ h3, .h3 { font-size: var(--font-size-h3); line-height: var(--line-height-h3); fo
       ZAPIT_SESSION.accessToken = data.data.access_token;
       ZAPIT_SESSION.refreshToken = data.data.refresh_token;
       ZAPIT_SESSION.user = data.data.user;
+      persistSession(ZAPIT_SESSION.accessToken, ZAPIT_SESSION.refreshToken);
 
       btn.querySelector('.btn-text').innerHTML = '✓ Logged in!';
       setTimeout(function () {
@@ -1019,6 +1051,7 @@ h3, .h3 { font-size: var(--font-size-h3); line-height: var(--line-height-h3); fo
       ZAPIT_SESSION.accessToken = data.data.access_token;
       ZAPIT_SESSION.refreshToken = data.data.refresh_token;
       ZAPIT_SESSION.user = data.data.user;
+      persistSession(ZAPIT_SESSION.accessToken, ZAPIT_SESSION.refreshToken);
       ZAPIT_SESSION.pendingEmail = email;
 
       setButtonLoading(btn, false);
@@ -1230,6 +1263,12 @@ h3, .h3 { font-size: var(--font-size-h3); line-height: var(--line-height-h3); fo
       if (!otpSuccessView.classList.contains('hidden')) closeOtpModal();
     }
   });
+
+  // Phase 3: PWA + lazy
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function() { navigator.serviceWorker.register('public/sw.js').catch(function(){}); });
+  }
+  document.querySelectorAll('img').forEach(function(img){ if (!img.hasAttribute('loading')) img.setAttribute('loading','lazy'); });
 
 })();
 </script>

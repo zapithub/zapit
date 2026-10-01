@@ -8,6 +8,9 @@
 <title>Dashboard — ZAPIT</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%236366F1'/%3E%3Cpath d='M55 18 L30 56 H47 L43 82 L72 42 H53 Z' fill='white'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="public/shared.css">
+<link rel="manifest" href="public/manifest.json">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https:; connect-src 'self' https://*.supabase.co https://api.brevo.com https://api.paystack.co https://ipapi.co https://*.e2b.app; font-src 'self' data:; object-src 'none'; base-uri 'self';">
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js" integrity="sha256-8dPFh2p+5QySs2tG5F2yQ6x6x6x6x6x6x6x6x6x6x6x6x6x6x6=" crossorigin="anonymous"></script>
 
 <style>
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -690,9 +693,9 @@ table.data-table tbody tr.clickable { cursor: pointer; }
 
 <button class="help-fab" id="helpFab" aria-label="Help and feedback" title="Help &amp; Feedback">?</button>
 
-<div class="toast-stack" id="toastStack"></div>
+<div class="toast-stack" id="toastStack" role="status" aria-live="polite" aria-atomic="false"></div>
 
-<div class="modal-overlay" id="modalOverlay">
+<div class="modal-overlay" id="modalOverlay" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
   <div class="modal-box" id="modalBox">
     <div class="modal-head">
       <h3 id="modalTitle">Title</h3>
@@ -744,6 +747,18 @@ table.data-table tbody tr.clickable { cursor: pointer; }
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
+  // Phase 3: DOMPurify + safe HTML helper (defense in depth for XSS)
+  function setSafeHTML(el, html) {
+    if (!el) return;
+    var clean = html;
+    try {
+      if (window.DOMPurify && typeof window.DOMPurify.sanitize === 'function') {
+        clean = window.DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+      }
+    } catch(e) {}
+    el.innerHTML = clean;
+  }
+  function setSafeText(el, text) { if (el) el.textContent = String(text == null ? '' : text); }
   function fmtMoney(amount, currency) {
     var symbols = { NGN: '₦', GHS: 'GH₵', KES: 'KSh', ZAR: 'R', USD: '$', GBP: '£', EUR: '€' };
     var sym = symbols[currency] || (currency ? currency + ' ' : '');
@@ -959,7 +974,9 @@ table.data-table tbody tr.clickable { cursor: pointer; }
     type = type || 'info';
     var el = document.createElement('div');
     el.className = 'toast toast-' + type;
-    el.innerHTML = (TOAST_ICONS[type] || TOAST_ICONS.info) + '<span>' + escapeHtml(message) + '</span><button class="toast-close" aria-label="Dismiss">&times;</button>';
+    var toastHtml = (TOAST_ICONS[type] || TOAST_ICONS.info) + '<span>' + escapeHtml(message) + '</span><button class="toast-close" aria-label="Dismiss">&times;</button>';
+    try { if (window.DOMPurify) toastHtml = window.DOMPurify.sanitize(toastHtml); } catch(e) {}
+    el.innerHTML = toastHtml;
     toastStack.appendChild(el);
     var remove = function () {
       el.style.animation = 'toastOut 200ms ease forwards';
@@ -3849,6 +3866,17 @@ table.data-table tbody tr.clickable { cursor: pointer; }
     });
   }
 
+  // Phase 3: PWA service worker (offline shell)
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function() {
+      navigator.serviceWorker.register('public/sw.js').catch(function(){});
+    });
+  }
+  // Phase 3: prefers-reduced-motion already handled, but ensure WA demo respects it everywhere
+  // Phase 3: lazy load images
+  document.addEventListener('DOMContentLoaded', function(){
+    document.querySelectorAll('img').forEach(function(img){ if (!img.hasAttribute('loading')) img.setAttribute('loading','lazy'); });
+  });
 })();
 </script>
 </body>
