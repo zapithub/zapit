@@ -84,7 +84,10 @@ for (let i = 0; i < 80; i++) {
   await sleep(250);
 }
 if (!booted) {
-  console.log(`::error::order-loop smoke: the API never answered /health on port ${PORT}`);
+  // One annotation line carries the child's own output: without it a CI failure
+  // here is undiagnosable (and GitHub's raw job logs are not always reachable).
+  const tail = String(serverLog || '(no output from the API process)').replace(/\s+/g, ' ').slice(-1200);
+  console.log(`::error::order-loop smoke: the API never answered /health on port ${PORT} — node ${process.version} — child log tail: ${tail}`);
   console.log(serverLog.slice(-3000));
   server.kill('SIGTERM'); await fake.stop(); paystack.close();
   process.exit(1);
