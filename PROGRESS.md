@@ -17,7 +17,7 @@ This file is the single source of truth for what is **DONE** vs **PENDING**. Upd
 | **Phase 6.1** | **P0 — Admin & Secrets Closure** (new audit) | S-01,S-02,S-22,W-07 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
 | **Phase 6.2** | P0 — WhatsApp Webhook Authenticity | S-05,W-07 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
 | **Phase 6.3** | P0 — Tenant Routing & Shared-Mode Safety | S-06, W-14 (new) | ✅ **DONE — 2026-10-01** | 2026-10-01 |
-| **Phase 6.4** | P0 — Billing Free-Grant Kill | B-01,B-02,B-04 | ⏳ **PENDING** | — |
+| **Phase 6.4** | P0 — Billing Free-Grant Kill | B-01,B-02,B-04,B-07 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
 | **Phase 6.5** | P0/P1 — Data Leak & Injection Polish | S-22,S-16,S-15,S-13 | ⏳ **PENDING** | — |
 | **Phase 7** | P1 — Auth, Quotas, Money Correctness | S-07,S-08,S-14,B-05… | ⏳ **PENDING** | — |
 | **Phase 8** | P1 — Core Loop: Orders & Payments in Chat | W-01–W-04 | ⏳ **PENDING** | — |
@@ -261,7 +261,7 @@ fixed first — the routing queries themselves could never have worked with it i
 | 6.3.3 | **S-06** | `/onboarding/whatsapp` shared branch **no longer stores the platform number/token** on tenant rows; allocates a route code (`pickFreeRouteCode`/`assignRouteCode`, unique-index race-safe); `GET /whatsapp/qr-code` returns `route_code` + code-aware instructions; dashboard shows the code | ✅ Done |
 | 6.3.4 | **S-06/W-07** | `resolveSendCreds()` — outbound sends use an **explicit channel**: tenant credentials (individual, strict — throws when missing) or the platform shared number (shared tenants only). Applied to webhook welcome/AI reply, broadcast, conversation reply, onboarding notify, order/payment/cancel notifications | ✅ Done |
 | 6.3.5 | **S-06** | Migration `20261004_phase6_03_shared_routing.sql`: `business_settings.wa_route_code` (backfilled, uppercase CHECK, **unique index**), platform creds purged from shared rows, **UNIQUE partial index** `(wa_phone_number_id) WHERE connection_method='individual'`, `wa_customer_tenant`, `shared_guidance`, `prune_wa_routing(180)` | ✅ Done |
-| 6.3.6 | — | Tests `tests/unit/tenantRouting.test.mjs` — 16 groups incl. the notebook test **“two shared tenants: no code → no tenant; `#CODE` → the right tenant of two”**, sticky/stale mapping, ambiguity refusal, cooldown throttle, credentials matrix, source wiring. `security-check` 44 → **54 checks** (adds W-14 zero-`.catch`, S-06 resolver/no-arbitrary-tenant/no-platform-creds, routing util, migration indexes) | ✅ Done |
+| 6.3.6 | — | Tests `tests/unit/tenantRouting.test.mjs` — 16 groups incl. the notebook test **“two shared tenants: no code → no tenant; `#CODE` → the right tenant of two”**, sticky/stale mapping, ambiguity refusal, cooldown throttle, credentials matrix, source wiring. `security-check` 44 → **55 checks** (adds W-14 zero-`.catch`, S-06 resolver/no-arbitrary-tenant/no-platform-creds, routing util, migration indexes) | ✅ Done |
 | 6.3.7 | — | Docs: `docs/API.md` (webhook contract + shared-number routing rules), `docs/ENV.md` (`SHARED_WA_NUMBER`) | ✅ Done |
 
 **Phase 6.3 Exit Criteria:** two shared tenants + stranger message on the shared number → **no tenant chosen** (old code answered as the first row); `#CODE` → the correct tenant only; sticky mapping → same tenant without the code; duplicate dedicated numbers → refused; unmatched → throttled guidance; zero `.catch(…)` on Supabase builders; `npm test` + `security:check` green. — **PASSED** ✅
@@ -269,10 +269,34 @@ fixed first — the routing queries themselves could never have worked with it i
 **Verification (2026-10-01, live E2E):**
 - `node --check < index.js` — ✅ (3,638 lines)
 - `npm test` — **7 suites ✅** (validation, plans, cache, crypto, admin, webhook, **tenantRouting**)
-- `npm run security:check` — **54/54 ✅** (was 44; +W-14, +S-06 groups)
+- `npm run security:check` — **55/55 ✅** (was 44; +W-14, +S-06 groups)
 - Live dev (PORT=3097): integration matrix ✅ (`/health` 200; wrong verify token 403; unsigned 401; valid sig 200; tampered/cross-body 401); `GET /whatsapp/qr-code` unauthenticated → 401 ✅; signed message with an unknown number → **200 ack with no `[WA WEBHOOK ERROR]`** (resolver handled it cleanly where the old chain threw) ✅
 - `grep -c "\.catch(" index.js` → **0** ✅ (was 43)
 - Migration `20261004_phase6_03_shared_routing.sql` — 113 lines ✅
+
+
+---
+
+## Phase 6.4 — P0 Billing Free-Grant Kill (B-01, B-02, B-04, B-07) — Detail
+
+| Task | Finding | Description | Status |
+|------|---------|-------------|--------|
+| 6.4.0 | — | **Gateway timeouts (found live):** `initializePaystack`/`verifyPaystack` now run through `paystackFetch()` with a 10s `AbortController` — a hanging upstream can never wedge a user request or already-acked webhook | ✅ Done |
+| 6.4.1 | **B-01** | `POST /subscription/reactivate` **never mints free time**: resume (same `expires_at`) only when paid time remains (active-with-cancel, or legacy cancelled-mid-period); otherwise **402 + a fresh Paystack payment is required**; already-active → no-op | ✅ Done |
+| 6.4.2 | **B-02** | `POST /subscription/cancel` keeps `status='active'` with `cancel_at = expires_at` (access until period end, matching the promise); immediately cancelled only when no paid time remains; cron downgrades at expiry | ✅ Done |
+| 6.4.3 | **B-04 + S-14** | Paystack `charge.success` is authorised by the pure `evaluateCharge()`: explicit success status, plan ≠ free, metadata agreement between signed event and `/transaction/verify`, currency match, and **amount == plan price in minor units** (annual = 12×0.8, unknown cycle → monthly, ±1 rounding unit) — any mismatch refuses the grant. Every verified charge is appended to the immutable `transactions` ledger (UNIQUE reference, UPDATE blocked by trigger); `/subscription/invoices` and `/admin/revenue` read the ledger | ✅ Done |
+| 6.4.4 | **B-07** | `POST /admin/users/:id/set-plan` — privileged grants are **bounded (1–365 days, integer)**, audited in `admin_audit_log` with actor/action/`details`/IP (new `details jsonb` column), and `req.adminVia` records secret-vs-role | ✅ Done |
+| 6.4.5 | — | Tests `tests/unit/billing.test.mjs` (7 groups incl. the full `evaluateCharge` decision table: underpay, currency switch, metadata tamper, annual-vs-monthly); `security-check` 55 → **67 checks**; `npm test` **8 suites** | ✅ Done |
+| 6.4.6 | — | Docs: `docs/API.md` billing contract (cancel/reactivate/webhook rules) | ✅ Done |
+
+**Phase 6.4 Exit Criteria:** `reactivate` requires payment or resumes with the **same** expiry (no free 30-day grant); `cancel` sets `cancel_at` period-end (access retained); webhook checks amount **and** currency before granting; `transactions` unique + append-only; no free Agency via API (admin grants bounded + audited); `npm test` + `security:check` green. — **PASSED** ✅
+
+**Verification (2026-10-01, live E2E + unit):**
+- `node --check < index.js` — ✅ (3,734 lines)
+- `npm test` — **8 suites ✅** (validation, plans, cache, crypto, admin, webhook, tenantRouting, **billing**)
+- `npm run security:check` — **67/67 ✅** (was 55; +B-01/B-02/B-04/B-07/S-14/migration groups)
+- Live (PORT=3096, `PAYSTACK_SECRET_KEY` set): unauth `cancel`/`reactivate`/`invoices`/`current` → **401** ✅; paystack webhook unsigned/tampered → **400** ✅; **signed bogus ₦1 “agency” charge → acked 200 but refused** (`[PAYSTACK WEBHOOK] fetch failed` → verify unavailable ⇒ no grant) ✅; WhatsApp matrix regression ✅; gateway calls bounded by 10s timeout ✅
+- `grep` invariants: no free-grant in reactivate ✅, `evaluateCharge` + plan-price check present ✅, `transactions` ledger write present ✅
 
 
 ### Changelog — Phase 5
@@ -313,8 +337,19 @@ fixed first — the routing queries themselves could never have worked with it i
   - Rewrote webhook resolution: dedicated → sticky → `#CODE`; no arbitrary `.limit(1)` tenant; throttled guidance for unmatched customers
   - `/onboarding/whatsapp` shared branch no longer stores platform creds; route code allocated + returned; `GET /whatsapp/qr-code` exposes the code; dashboard shows it
   - Created `supabase/migrations/20261004_phase6_03_shared_routing.sql` (route codes + unique indexes, creds purge, `wa_customer_tenant`, `shared_guidance`, pruning)
-  - Created `tests/unit/tenantRouting.test.mjs`; `npm test` **7 suites**; `security-check` **54 checks**; docs updated (`API.md`, `ENV.md`)
-  - **Verification:** `node --check` ✅, `npm test` ✅, `security:check` 54/54 ✅, live E2E ✅, `.catch` count 0 ✅
+  - Created `tests/unit/tenantRouting.test.mjs`; `npm test` **7 suites**; `security-check` **55 checks**; docs updated (`API.md`, `ENV.md`)
+  - **Verification:** `node --check` ✅, `npm test` ✅, `security:check` 55/55 ✅, live E2E ✅, `.catch` count 0 ✅
+
+
+### 2026-10-01 — Phase 6.4 Completed ✅ — P0 Billing Free-Grant Kill (B-01/B-02/B-04/B-07)
+- **Phase 6.4 — P0 Billing Free-Grant Kill — DONE**
+  - Created `src/utils/billing.js` (cycles/pricing, `expectedAmountMinor`, `verifyPaymentAmount`, `cancelSubscriptionPlan`, `reactivateDecision`, `activationFields`, pure `evaluateCharge`)
+  - `reactivate` no longer grants free 30 days — resume with the same expiry, or 402 + new payment; `cancel` keeps access until period end via `cancel_at`
+  - Paystack webhook: amount/currency/metadata verification before any grant; immutable `transactions` ledger (unique + append-only trigger); invoices/revenue read the ledger
+  - Admin set-plan grants bounded 1–365 days + audited; Paystack gateway calls time-bounded (10s)
+  - Created `supabase/migrations/20261005_phase6_04_billing_guardrails.sql` (cancel_at/cancelled_at + index, ledger uniqueness + immutability trigger, `admin_audit_log.details`)
+  - Tests `tests/unit/billing.test.mjs`; `npm test` **8 suites**; `security-check` **67 checks**; docs/API.md updated
+  - **Verification:** `node --check` ✅, `npm test` ✅, `security:check` 67/67 ✅, live E2E (401/400/200-refused) ✅
 
 
 ---
@@ -325,14 +360,14 @@ fixed first — the routing queries themselves could never have worked with it i
 |--------|--------|-------|
 | Critical findings | 11 | 0 |
 | High findings | 14 | 0 |
-| Security check | — | 54/54 ✅ (Phase 6.3) |
-| Tests | 0 | 7 suites ✅ (incl. admin, webhook, tenantRouting) |
+| Security check | — | 67/67 ✅ (Phase 6.4) |
+| Tests | 0 | 8 suites ✅ (incl. admin, webhook, tenantRouting, billing) |
 | Docs | 2 lines | 150+ lines + 5 docs |
-| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 3,638 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 deterministic routing + W-14 `.catch` fix), modular imports, allowlist, spawn, cache, locks |
+| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 3,734 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails), modular imports, allowlist, spawn, cache, locks |
 | Frontend | 4× duplicated tokens, hardcode, 45 raw innerHTML | shared.css, pricing.json, DOMPurify+CSP, PWA, a11y focus trap |
-| DB | no migrations | 4 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing) + advisory locks |
+| DB | no migrations | 5 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails) + advisory locks |
 
-**Next steps for the team:** Run `supabase db push` (apply `20261002`…`20261004`, then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`), set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`** + unique `WA_VERIFY_TOKEN`, share `GET /whatsapp/qr-code` route codes with free-plan users, then continue **Phase 6.4 (B-01 free-grant) → 6.5 (S-16/S-15 polish)**, before paid traffic per Phase 0 §A.4. Phase 6.1–6.3 P0s closed — 1 P0 remains (B-01). 🎉
+**Next steps for the team:** Run `supabase db push` (apply `20261002`…`20261005`, then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`), set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN`, share `GET /whatsapp/qr-code` route codes with free-plan users, then continue **Phase 6.5 (S-16/S-15/S-13 polish)**, before paid traffic per Phase 0 §A.4. Phase 6.1–6.4 P0s closed — **all P0 audit findings resolved**. 🎉
 
 ---
 
@@ -347,10 +382,14 @@ fixed first — the routing queries themselves could never have worked with it i
 | S-04 | Hard-coded `JWT_SECRET` | P0 | ✅ FIXED (Phase 1) |
 | S-05 | WhatsApp webhook unsigned | P0 | ✅ **FIXED 6.2** (HMAC + raw body + dedup) |
 | S-06 | Shared-number `.limit(1)` tenant | P0 | ✅ **FIXED 6.3** (dedicated → sticky → #CODE, fail-closed) |
-| B-01 | `reactivate` free forever | P0 | 🔴 **OPEN → Phase 6.4** |
+| B-01 | `reactivate` free forever | P0 | ✅ **FIXED 6.4** (resume same expiry or pay again) |
 | W-07 | Platform-credential fallback spam | P0 | ✅ **FIXED 6.1** (strict tenant; explicit shared channel 6.3) |
 | **W-14** | **new —** `.catch()` on Supabase v2 builders is not a function (43 sites, webhook DOA) | P0 | ✅ **FIXED 6.3** (0 remain, enforced by security-check) |
 | S-22 | `select('*')` leaks `password_hash` | P0 | ✅ **FIXED 6.1** (SAFE_USER_SELECT) |
-| *~38 P1/P2* | OAuth state, JWT 7d, CORS, quotas, S-15 OTP `Math.random`, B-05 currency, W-01 orders, C-01 social, U-01 etc. | P1/P2 | ⏳ Most **OPEN** → Phases 6.5–10 (sequential, no shortcut) |
+| B-02 | `cancel` immediate vs promised period-end | P1 | ✅ **FIXED 6.4** (`cancel_at` = period end) |
+| B-04 | No transaction ledger / invoices | P0 | ✅ **FIXED 6.4** (immutable `transactions`, unique reference) |
+| B-07 | Free Agency via API (admin grants unbounded/unaudited) | P0 | ✅ **FIXED 6.4** (1–365 days, audited, webhook refuses free plans) |
+| S-14 | Paystack amount/currency unchecked | P1 | ✅ **FIXED 6.4** (pure `evaluateCharge`; signature+idempotency earlier) |
+| *~38 P1/P2* | OAuth state, JWT 7d, CORS, quotas, S-15 OTP `Math.random`, B-05 currency, B-09 reset, W-01 orders, C-01 social, U-01 etc. | P1/P2 | ⏳ Most **OPEN** → Phases 6.5–10 (sequential, no shortcut) |
 
-**Pending after 6.3:** 6.4 (B-01 free-grant), 6.5 (S-15/S-16 etc.) → Phase 7 (auth/quotas) → 8 (core loop) → 9 (social) → 10 (UX/NDPA). *Finish each stage before next per user direction.*
+**Pending after 6.4:** 6.5 (S-15/S-16/S-13 polish) → Phase 7 (auth/quotas) → 8 (core loop) → 9 (social) → 10 (UX/NDPA). *Finish each stage before next per user direction.*

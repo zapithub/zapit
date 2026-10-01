@@ -31,6 +31,34 @@ All authenticated routes require `Authorization: Bearer <accessToken>`.
 
 See `index.js` for full list (54 routes). OpenAPI 3.1 to be generated from `src/utils/validation.js` SCHEMAS (Phase 5 TODO: `npm run openapi:generate`).
 
+## Billing & subscriptions (Phase 6.4 — B-01/B-02/B-04/B-07)
+
+Plans: `free`, `creator`, `growth`, `agency` (`src/config/plans.js`). Prices are per currency
+(NGN/GHS/KES/ZAR/USD); **annual = 12 × monthly × 0.80** (20% off), billed 365 days → `billing_cycle: "annual"`.
+
+- `POST /upgrade` `{plan, billing_cycle?}` → Paystack `payment_url`. The signed metadata carries
+  `user_id`, `plan`, `billing_cycle`, `currency` **and `amount_minor`**, so the webhook can verify
+  the charge against the server-side price table. Free plan is not purchasable.
+- `POST /subscription/cancel` → `200 {data:{plan, status:"active", access_until, cancel_at}}`.
+  **Access continues until the paid period ends** (`cancel_at = expires_at`, `auto_renew=false`);
+  if no paid time remains the subscription is cancelled immediately.
+- `POST /subscription/reactivate` → one of:
+  - `200 {message:"Subscription is already active"}` — nothing to do;
+  - `200 {data:{status:"active", access_until}}` — **resume with the same expiry** (never extends it);
+  - **`402 {success:false, payment_required:true, payment_url, reference, amount, currency, plan, billing_cycle}`**
+    when the paid period has ended — a *new* Paystack payment is required before access returns;
+  - `404` — no subscription on record.
+- `GET /subscription/invoices` — reads the immutable `transactions` ledger first (legacy
+  `subscriptions` rows as fallback).
+- `POST /admin/users/:id/set-plan` `{plan, expires_in_days}` — `expires_in_days` must be an
+  integer **1–365**; every grant writes an `admin_audit_log` row (`set_plan:{plan}:{days}d`,
+  `details{plan,days,via}`). Only for admin roles / `ADMIN_SECRET`.
+- Webhook `charge.success` grants only when the Paystack `/verify` response agrees with the signed
+  event: status `success`, non-free plan, metadata match, currency match, and the paid amount equals
+  the plan price in minor units (±1 unit rounding). Every verified charge appends to
+  `transactions` (UNIQUE `paystack_reference`, append-only trigger); mismatches are logged at
+  `level:"error"` and grant nothing.
+
 ## Pagination
 
 List endpoints accept `?page=1&limit=20` (max 100). Response includes `meta: { total, page, limit }` or `pagination`.
@@ -41,7 +69,8 @@ All errors: `{ success:false, error:"message", requestId:"..." }`. 401 for auth,
 
 ## Webhooks
 
-- `POST /webhook/paystack` — raw body, `x-paystack-signature` timingSafeEqual, idempotent on `reference`
+- `POST /webhook/paystack` — raw body, `x-paystack-signature` timingSafeEqual, idempotent on `reference`,
+  amount/currency/metadata verified via the `/verify` response before any plan is granted (6.4)
 - `GET /webhook/whatsapp` — Meta handshake, `hub.verify_token` compared in constant time (403 otherwise)
 - `POST /webhook/whatsapp` — raw body, `X-Hub-Signature-256` HMAC-SHA256 verified (401 invalid; 503 in
   production when `WA_APP_SECRET`/`META_APP_SECRET` is missing), replay-protected per `wamid`

@@ -25,6 +25,7 @@ import { withAdvisoryLock } from './src/utils/distributedLock.js';
 import { parsePagination } from './src/utils/validation.js';
 import { verifyMetaSignature, verifyWebhookVerifyToken, claimWebhookEvent } from './src/utils/webhook.js';
 import { generateRouteCode, resolveTenantForInbound, upsertWaCustomerTenant, claimSharedGuidance, resolveSendCreds } from './src/utils/tenantRouting.js';
+import { evaluateCharge, expectedAmountMinor, cancelSubscriptionPlan, reactivateDecision, activationFields, normalizeCycle } from './src/utils/billing.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -373,12 +374,14 @@ async function authenticate(req, res, next) {
 async function requireAdmin(req, res, next) {
   // Phase 6.1 — harden: timingSafeEqual + DB role (not username) — fixes S-01/S-02
   if (hasValidAdminSecret(req.headers['x-admin-secret'])) {
+    req.adminVia = 'secret';
     console.log(JSON.stringify({ level:'info', reqId:req.id, adminAction: `${req.method} ${req.path}`, userId: req.user?.id || 'secret', ip:req.ip, via:'secret' }));
     return next();
   }
   try {
     const { data: dbUser, error } = await supabase.from('users').select('role').eq('id', req.user?.id).single();
     if (!error && dbUser?.role === 'admin') {
+      req.adminVia = 'role';
       console.log(JSON.stringify({ level:'info', reqId:req.id, adminAction: `${req.method} ${req.path}`, userId: req.user.id, ip:req.ip, via:'role' }));
       return next();
     }
@@ -504,8 +507,18 @@ function getPricingForLocation(location) {
 }
 
 // ─── PAYSTACK ───────────────────────────────────────────────────
+// All gateway calls are time-bounded: a hanging upstream must never wedge a
+// request handler or the webhook (which already acked Paystack).
+async function paystackFetch(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally { clearTimeout(timer); }
+}
+
 async function initializePaystack({ email, amount, currency = 'NGN', metadata, callback_url }) {
-  const res = await fetch('https://api.paystack.co/transaction/initialize', {
+  const res = await paystackFetch('https://api.paystack.co/transaction/initialize', {
     method: 'POST',
     headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, amount: Math.round(amount * 100), currency, metadata, callback_url: callback_url || `${FRONTEND_URL}/payment-success` }),
@@ -514,7 +527,7 @@ async function initializePaystack({ email, amount, currency = 'NGN', metadata, c
 }
 
 async function verifyPaystack(reference) {
-  const res = await fetch(`https://api.paystack.co/transaction/verify/${reference}`, {
+  const res = await paystackFetch(`https://api.paystack.co/transaction/verify/${reference}`, {
     headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}` },
   });
   return res.json();
@@ -3023,7 +3036,7 @@ app.post('/subscription/upgrade', authenticate, async (req, res) => {
     const currency       = user.currency||location.currency;
     let amount           = PLAN_LIMITS[plan].price[currency] ?? PLAN_LIMITS[plan].price.USD;
     if (billing_cycle==='annual') amount = amount*12*0.80;
-    const result = await initializePaystack({ email:user.email, amount, currency, metadata:{ user_id:req.user.id, plan, billing_cycle, custom_fields:[{ display_name:'Plan', variable_name:'plan', value:plan }] }, callback_url:`${FRONTEND_URL}/pricing.html?plan=${plan}` });
+    const result = await initializePaystack({ email:user.email, amount, currency, metadata:{ user_id:req.user.id, plan, billing_cycle, currency, amount_minor:Math.round(amount*100), custom_fields:[{ display_name:'Plan', variable_name:'plan', value:plan }] }, callback_url:`${FRONTEND_URL}/pricing.html?plan=${plan}` });
     if (!result.status) throw new Error(result.message||'Payment init failed');
     return res.json({ success:true, data:{ payment_url:result.data.authorization_url, reference:result.data.reference, amount, currency, plan }, message:'Redirecting to payment...' });
   } catch (err) {
@@ -3031,27 +3044,76 @@ app.post('/subscription/upgrade', authenticate, async (req, res) => {
   }
 });
 
-// POST /subscription/cancel
+// POST /subscription/cancel — B-02: access is kept until the paid period ends
 app.post('/subscription/cancel', authenticate, async (req, res) => {
   try {
-    await supabase.from('subscriptions').update({ status:'cancelled', cancelled_at:new Date().toISOString(), auto_renew:false }).eq('user_id',req.user.id).eq('status','active');
-    return res.json({ success:true, message:"Subscription cancelled. You'll retain access until end of billing period." });
+    const { data:sub } = await supabase.from('subscriptions').select('*').eq('user_id',req.user.id).eq('status','active').limit(1);
+    const current = Array.isArray(sub) ? sub[0] : sub;
+    if (!current) return res.status(404).json({ success:false, error:'No active subscription found.' });
+    const fields = cancelSubscriptionPlan(current);
+    await supabase.from('subscriptions').update({ status:fields.status, cancelled_at:fields.cancelled_at, cancel_at:fields.cancel_at, auto_renew:fields.auto_renew }).eq('id',current.id);
+    invalidateSubscriptionCache(req.user.id);
+    return res.json({
+      success:true,
+      data:{ access_until:fields.access_until, plan:current.plan },
+      message:fields.access_until
+        ? `Subscription cancelled. You'll keep full access until ${new Date(fields.access_until).toDateString()}, then move to the Free plan.`
+        : "Subscription cancelled. You're now on the Free plan.",
+    });
   } catch { return res.status(500).json({ success:false, error:'Failed to cancel subscription.' }); }
 });
 
-// POST /subscription/reactivate
+// POST /subscription/reactivate — B-01: never grants free time; pays again when the period is over
 app.post('/subscription/reactivate', authenticate, async (req, res) => {
   try {
-    const { data:sub } = await supabase.from('subscriptions').select('*').eq('user_id',req.user.id).eq('status','cancelled').order('cancelled_at',{ ascending:false }).limit(1).single();
-    if (!sub) return res.status(404).json({ success:false, error:'No cancelled subscription found.' });
-    await supabase.from('subscriptions').update({ status:'active', cancelled_at:null, auto_renew:true, expires_at:new Date(Date.now()+30*24*60*60*1000).toISOString() }).eq('id',sub.id);
-    return res.json({ success:true, message:'Subscription reactivated! Welcome back!' });
-  } catch { return res.status(500).json({ success:false, error:'Failed to reactivate.' }); }
+    const { data:rows } = await supabase.from('subscriptions').select('*').eq('user_id',req.user.id).neq('plan','free').order('created_at',{ ascending:false }).limit(1);
+    const sub = Array.isArray(rows) ? rows[0] : rows;
+    const decision = reactivateDecision(sub);
+
+    if (decision.mode === 'already_active') {
+      return res.json({ success:true, data:{ resumed:false, already_active:true, plan:sub.plan, access_until:decision.access_until, payment_required:false }, message:`Your ${sub.plan} plan is already active.` });
+    }
+
+    if (decision.mode === 'resume') {
+      await supabase.from('subscriptions').update({ status:'active', cancelled_at:null, cancel_at:null, auto_renew:true }).eq('id',sub.id);
+      invalidateSubscriptionCache(req.user.id);
+      return res.json({
+        success:true,
+        data:{ resumed:true, plan:sub.plan, access_until:decision.access_until, payment_required:false },
+        message:decision.access_until
+          ? `Subscription resumed! Your ${sub.plan} plan keeps running until ${new Date(decision.access_until).toDateString()}.`
+          : 'Subscription resumed! Welcome back!',
+      });
+    }
+
+    if (decision.mode === 'not_found') return res.status(404).json({ success:false, error:'No subscription to reactivate. Choose a plan to subscribe.' });
+    // Paid period is over (or no paid time left) → require a NEW verified payment.
+    if (!PAYSTACK_SECRET_KEY) return res.status(400).json({ success:false, error:'Payment gateway not configured. Contact support.' });
+    const { data:user } = await supabase.from('users').select('email,full_name,currency').eq('id',req.user.id).single();
+    const cycle    = normalizeCycle(sub.billing_cycle || 'monthly');
+    const currency = String(sub.currency || user?.currency || 'NGN').toUpperCase();
+    const amount   = (expectedAmountMinor({ plan: sub.plan, currency, billingCycle: cycle }) ?? 0) / 100;
+    const result   = await initializePaystack({
+      email:user?.email || '', amount, currency,
+      metadata:{ user_id:req.user.id, plan:sub.plan, billing_cycle:cycle, currency, amount_minor:Math.round(amount*100), reactivation:true },
+      callback_url:`${FRONTEND_URL}/payment-success`,
+    });
+    if (!result.status) throw new Error(result.message || 'Payment init failed');
+    return res.status(402).json({
+      success:false,
+      data:{ payment_required:true, payment_url:result.data.authorization_url, reference:result.data.reference, amount, currency, plan:sub.plan, billing_cycle:cycle },
+      error:'Your paid period has ended. Complete a new payment to reactivate.',
+    });
+  } catch (err) { return res.status(500).json({ success:false, error:err.message||'Failed to reactivate.' }); }
 });
 
-// GET /subscription/invoices
+// GET /subscription/invoices — B-04: append-only ledger first, subscriptions as legacy fallback
 app.get('/subscription/invoices', authenticate, async (req, res) => {
   try {
+    const { data:tx } = await supabase.from('transactions')
+      .select('id,paystack_reference,plan,billing_cycle,amount_paid,currency,status,created_at')
+      .eq('user_id',req.user.id).order('created_at',{ ascending:false }).limit(100);
+    if (tx?.length) return res.json({ success:true, data:tx });
     const { data } = await supabase.from('subscriptions').select('id,plan,status,amount_paid,currency,billing_cycle,starts_at,expires_at,paystack_reference').eq('user_id',req.user.id).order('created_at',{ ascending:false });
     return res.json({ success:true, data:data||[] });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch invoices.' }); }
@@ -3263,13 +3325,22 @@ app.get('/admin/users/:id', authenticate, adminLimiter, requireAdmin, async (req
 });
 
 // POST /admin/users/:id/set-plan
+// POST /admin/users/:id/set-plan — B-07: free grants are explicit, bounded, and audited
 app.post('/admin/users/:id/set-plan', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
-    const { plan, expires_in_days=30 } = req.body;
+    const { plan } = req.body;
     if (!PLAN_LIMITS[plan]) return res.status(400).json({ success:false, error:'Invalid plan.' });
+    const days = req.body.expires_in_days === undefined ? 30 : Number(req.body.expires_in_days);
+    if (!Number.isInteger(days) || days < 1 || days > 365) {
+      return res.status(400).json({ success:false, error:'expires_in_days must be an integer between 1 and 365.' });
+    }
     invalidateSubscriptionCache(req.params.id);
-    await supabase.from('subscriptions').upsert({ user_id:req.params.id, plan, status:'active', billing_cycle:'admin_override', amount_paid:0, starts_at:new Date().toISOString(), expires_at:new Date(Date.now()+Number(expires_in_days)*24*60*60*1000).toISOString() },{ onConflict:'user_id' });
-    return res.json({ success:true, message:`User plan set to ${plan} for ${expires_in_days} days.` });
+    await supabase.from('subscriptions').upsert({ user_id:req.params.id, plan, status:'active', billing_cycle:'admin_override', amount_paid:0, starts_at:new Date().toISOString(), expires_at:new Date(Date.now()+days*24*60*60*1000).toISOString(), cancel_at:null, cancelled_at:null },{ onConflict:'user_id' });
+    // Audit trail for privileged grants (table from Phase 6.1 migration)
+    try {
+      await supabase.from('admin_audit_log').insert({ admin_user_id:req.user?.id || null, action:`set_plan:${plan}:${days}d`, target_user_id:req.params.id, ip_address:req.ip, details:{ plan, days, via:req.adminVia || 'role' } });
+    } catch (e) { console.warn('[admin audit]', e.message); }
+    return res.json({ success:true, message:`User plan set to ${plan} for ${days} days.` });
   } catch { return res.status(500).json({ success:false, error:'Failed to set plan.' }); }
 });
 
@@ -3307,11 +3378,16 @@ app.get('/admin/platform-stats', authenticate, adminLimiter, requireAdmin, async
 // GET /admin/revenue
 app.get('/admin/revenue', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
-    const { data:subs } = await supabase.from('subscriptions').select('plan,amount_paid,currency').eq('status','active').neq('plan','free');
+    // B-04: append-only transactions are the revenue source of truth; subscriptions legacy fallback.
+    const [{ data:subs },{ data:tx }] = await Promise.all([
+      supabase.from('subscriptions').select('plan,amount_paid,currency').eq('status','active').neq('plan','free'),
+      supabase.from('transactions').select('plan,amount_paid,currency').eq('status','success'),
+    ]);
     const byPlan = {};
     let total = 0;
-    (subs||[]).forEach(s => { byPlan[s.plan]=(byPlan[s.plan]||0)+(s.amount_paid||0); total+=(s.amount_paid||0); });
-    return res.json({ success:true, data:{ total_mrr:total, by_plan:byPlan, subscriber_count:(subs||[]).length } });
+    const source = tx?.length ? tx : (subs||[]);
+    source.forEach(s => { byPlan[s.plan]=(byPlan[s.plan]||0)+(s.amount_paid||0); total+=(s.amount_paid||0); });
+    return res.json({ success:true, data:{ total_revenue:total, total_mrr: tx?.length ? undefined : total, by_plan:byPlan, subscriber_count:(subs||[]).length, ledger:'transactions', ledger_rows:(tx||[]).length } });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch revenue.' }); }
 });
 
@@ -3374,36 +3450,56 @@ app.post('/webhook/paystack', webhookLimiter, async (req, res) => {
     res.status(200).json({ success:true }); // Respond immediately
 
     if (event.event === 'charge.success') {
-      const { reference, metadata, amount, currency } = event.data;
-      const userId = metadata?.user_id;
-      const plan   = metadata?.plan;
-      const cycle  = metadata?.billing_cycle || 'monthly';
-      if (!userId||!plan||!PLAN_LIMITS[plan]) return;
+      const { reference } = event.data;
+      if (!reference) return;
 
-      // Idempotency: if same reference already processed, skip (prevents double charge on retry)
+      // Idempotency: same reference already processed → skip (prevents double grant on retry)
       try {
-        const { data: dup } = await supabase.from('subscriptions').select('paystack_reference').eq('user_id', userId).eq('paystack_reference', reference).single();
-        if (dup) { console.log(JSON.stringify({ level:'info', msg:'paystack duplicate reference', reference })); return; }
+        const { data: dup } = await supabase.from('subscriptions').select('paystack_reference').eq('paystack_reference', reference).limit(1);
+        if (Array.isArray(dup) ? dup.length : dup) { console.log(JSON.stringify({ level:'info', msg:'paystack duplicate reference', reference })); return; }
       } catch {}
       // Also check webhook_events table if exists
       try {
-        const { data: ev } = await supabase.from('webhook_events').select('id').eq('provider','paystack').eq('event_id', String(reference)).single();
-        if (ev) { console.log(JSON.stringify({ level:'info', msg:'paystack duplicate webhook_events', reference })); return; }
+        const { data: ev } = await supabase.from('webhook_events').select('id').eq('provider','paystack').eq('event_id', String(reference)).limit(1);
+        if (Array.isArray(ev) ? ev.length : ev) { console.log(JSON.stringify({ level:'info', msg:'paystack duplicate webhook_events', reference })); return; }
         supabase.from('webhook_events').insert({ provider:'paystack', event_id:String(reference), payload:event, received_at:new Date().toISOString() }).then(()=>{});
       } catch {}
 
+      // ── B-04/S-14: the pure decision function authorises the charge ──
       const verify = await verifyPaystack(reference);
-      if (verify.data?.status !== 'success') return;
+      const decision = evaluateCharge({ eventData: event.data, verifyData: verify?.data });
+      if (!decision.ok) {
+        console.error(JSON.stringify({ level:'error', msg:`paystack charge refused (${decision.reason}) — plan NOT granted`, reference }));
+        return;
+      }
+      const { userId, plan, cycle, currency: paidCur, amountPaid } = decision.grant;
 
-      const amountPaid = amount/100;
-      const days       = cycle==='annual' ? 365 : 30;
+      // Activate FIRST (idempotent upsert) so a retry can never be blocked by the ledger.
       invalidateSubscriptionCache(userId);
-      await supabase.from('subscriptions').upsert({ user_id:userId, plan, status:'active', billing_cycle:cycle, amount_paid:amountPaid, currency, paystack_reference:reference, starts_at:new Date().toISOString(), expires_at:new Date(Date.now()+days*24*60*60*1000).toISOString(), next_billing_date:new Date(Date.now()+days*24*60*60*1000).toISOString(), auto_renew:true },{ onConflict:'user_id' });
+      const { error: subErr } = await supabase.from('subscriptions').upsert({
+        user_id:userId, plan, billing_cycle:cycle, amount_paid:amountPaid, currency:paidCur,
+        paystack_reference:reference, ...activationFields({ cycle }),
+      },{ onConflict:'user_id' });
+      if (subErr) {
+        console.error(JSON.stringify({ level:'error', msg:'subscription activation failed — needs reconciliation', reference, plan, err: subErr.message }));
+        return;
+      }
+
+      // Immutable ledger (transactions: UNIQUE paystack_reference, append-only). A duplicate
+      // here means a previous delivery already recorded it — never an early return.
+      try {
+        const { error: txErr } = await supabase.from('transactions').insert({
+          user_id:userId, paystack_reference:reference, plan, billing_cycle:cycle,
+          amount_paid:amountPaid, currency:paidCur, status:'success', created_at:new Date().toISOString(),
+        });
+        if (txErr && txErr.code === '23505') console.log(JSON.stringify({ level:'info', msg:'paystack transaction already recorded', reference }));
+        else if (txErr) console.warn(JSON.stringify({ level:'warn', msg:'transaction ledger insert failed', reference, err: txErr.message }));
+      } catch (e) { console.warn(JSON.stringify({ level:'warn', msg:'transaction ledger error', reference, err: e.message })); }
 
       const { data:user } = await supabase.from('users').select('email,full_name').eq('id',userId).single();
       if (user) {
         await sendEmail({ to:user.email, toName:user.full_name, subject:`🎉 You're on ZAPIT ${plan.charAt(0).toUpperCase()+plan.slice(1)} Plan!`,
-          htmlContent:`<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px"><h1 style="color:#6366F1">⚡ ZAPIT</h1><h2>Payment Confirmed! 🎉</h2><p>Hi ${user.full_name||'there'},</p><p>Your payment of <strong>${currency} ${amountPaid.toLocaleString()}</strong> was successful.</p><p>You're now on the <strong>${plan.toUpperCase()}</strong> plan.</p><p>Reference: ${reference}</p><a href="${FRONTEND_URL}/dashboard" style="background:#6366F1;color:white;padding:12px 24px;text-decoration:none;border-radius:8px;display:inline-block;margin-top:16px">Go to Dashboard →</a></div>` });
+          htmlContent:`<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px"><h1 style="color:#6366F1">⚡ ZAPIT</h1><h2>Payment Confirmed! 🎉</h2><p>Hi ${user.full_name||'there'},</p><p>Your payment of <strong>${paidCur} ${amountPaid.toLocaleString()}</strong> was successful.</p><p>You're now on the <strong>${plan.toUpperCase()}</strong> plan.</p><p>Reference: ${reference}</p><a href="${FRONTEND_URL}/dashboard" style="background:#6366F1;color:white;padding:12px 24px;text-decoration:none;border-radius:8px;display:inline-block;margin-top:16px">Go to Dashboard →</a></div>` });
       }
       // Referral reward
       const { data:ref } = await supabase.from('referrals').select('*').eq('referred_id',userId).eq('status','pending').single();

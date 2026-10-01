@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ZAPIT — Security smoke check for CI (Phases 1–6.3)
+// ZAPIT — Security smoke check for CI (Phases 1–6.4)
 // Fails (exit 1) if any critical invariant is violated.
 // No external deps, runs on Node 18+.
 
@@ -199,10 +199,54 @@ try {
   else pass('Phase 6.3 unique indexes present');
 } catch { fail('Phase 6.3 migration file missing'); }
 
+// ── 24. Phase 6.4 — Billing guardrails (B-01/B-02/B-04/B-07) ──────
+// B-01: reactivating after the paid period must not mint free time
+const reactivateBlock = indexJs.slice(indexJs.indexOf("app.post('/subscription/reactivate'"), indexJs.indexOf("app.get('/subscription/invoices'"));
+if (!reactivateBlock.includes('reactivateDecision(')) fail('reactivate does not use reactivateDecision (B-01)');
+else pass('Reactivate uses billing rules (B-01)');
+if (reactivateBlock.includes('expires_at:new Date(Date.now()+30*24*60*60*1000)')) fail('reactivate still grants a free 30-day period (B-01)');
+else pass('No free 30-day grant in reactivate (B-01)');
+if (!reactivateBlock.includes('initializePaystack(') || !reactivateBlock.includes('payment_required')) fail('reactivate does not require payment when the period has ended (B-01)');
+else pass('Reactivate requires a new payment when the period ended (B-01)');
+
+// B-02: cancel keeps access until period end
+const cancelBlock = indexJs.slice(indexJs.indexOf("app.post('/subscription/cancel'"), indexJs.indexOf("app.post('/subscription/reactivate'"));
+if (!cancelBlock.includes('cancelSubscriptionPlan(') || !cancelBlock.includes('cancel_at')) fail('cancel does not defer to period end (B-02)');
+else pass('Cancel keeps access until period end (B-02)');
+
+// B-04/S-14: webhook validates the paid amount/currency and records the ledger
+if (!indexJs.includes('evaluateCharge(') || !indexJs.includes('expectedAmountMinor(')) fail('Paystack webhook does not verify amount/currency (S-14/B-04)');
+else pass('Paystack webhook verifies amount/currency (S-14/B-04)');
+if (!indexJs.includes("from('transactions').insert(")) fail('Paystack webhook does not record the transactions ledger (B-04)');
+else pass('Paystack webhook records immutable transactions (B-04)');
+if (indexJs.includes("if (!userId||!plan||!PLAN_LIMITS[plan]) return;")) fail('Paystack webhook no longer refuses free plan grants (B-07)');
+else pass('Paystack webhook refuses free-plan grants (B-07)');
+
+// B-07: privileged grants are bounded + audited
+const setPlanBlock = indexJs.slice(indexJs.indexOf("app.post('/admin/users/:id/set-plan'"), indexJs.indexOf("app.post('/admin/users/:id/suspend'"));
+if (!setPlanBlock.includes('expires_in_days must be an integer between 1 and 365')) fail('admin set-plan days are unbounded (B-07)');
+else pass('Admin set-plan days are bounded 1–365 (B-07)');
+if (!setPlanBlock.includes('admin_audit_log')) fail('admin set-plan is not audited (B-07)');
+else pass('Admin set-plan writes an audit row (B-07)');
+
+// billing util + migration
+try {
+  const bl = fs.readFileSync('src/utils/billing.js','utf8');
+  if (!bl.includes('cancelSubscriptionPlan') || !bl.includes('reactivateDecision') || !bl.includes('verifyPaymentAmount') || !bl.includes('evaluateCharge')) fail('billing util missing rules (6.4)');
+  else pass('billing util present (6.4)');
+  if (!bl.includes("mode: 'payment_required'")) fail('billing util lacks payment_required path (B-01)');
+  else pass('billing util has payment_required path (B-01)');
+} catch { fail('src/utils/billing.js missing (6.4)'); }
+try {
+  const mig = fs.readFileSync('supabase/migrations/20261005_phase6_04_billing_guardrails.sql','utf8');
+  if (!mig.includes('cancel_at') || !mig.includes('transactions_immutable') || !mig.includes('admin_audit_log')) fail('Phase 6.4 migration missing guardrails');
+  else pass('Phase 6.4 migration present');
+} catch { fail('Phase 6.4 migration file missing'); }
+
 console.log('');
 if (fails) {
-  console.error(`\n${fails} check(s) failed — Phase 6.3 not done.`);
+  console.error(`\n${fails} check(s) failed — Phase 6.4 not done.`);
   process.exit(1);
 } else {
-  console.log('All security checks passed (Phases 1–6.3). ✅');
+  console.log('All security checks passed (Phases 1–6.4). ✅');
 }
