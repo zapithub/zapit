@@ -958,7 +958,16 @@ Reply (warm, helpful, conversational):`;
         const { limits: subLimits } = await getUserSubscription(businessUserId);
         const kbLimit = subLimits?.knowledge_base_limit || 20;
 
-        if ((kbCount || 0) < Math.floor(kbLimit * 0.9)) {
+        // Throttle: max 3 auto-learn per user per day
+        let autoToday = 0;
+        try {
+          const since = new Date(new Date().setHours(0,0,0,0)).toISOString();
+          const { count } = await supabase.from('knowledge_base').select('id',{count:'exact',head:true}).eq('user_id', businessUserId).eq('auto_learned', true).gte('created_at', since);
+          autoToday = count || 0;
+        } catch {}
+        if (autoToday >= 3) {
+          console.log(JSON.stringify({ level:'info', msg:'auto-learn throttled', userId: businessUserId, autoToday }));
+        } else if ((kbCount || 0) < Math.floor(kbLimit * 0.9)) {
           // Only auto-save if under 90% of limit (leave headroom for manual entries)
           await supabase.from('knowledge_base').insert({
             user_id:    businessUserId,
@@ -966,7 +975,9 @@ Reply (warm, helpful, conversational):`;
             response:   aiResponse.trim(),
             category:   'Auto-Learned',
             language:   lang || 'en',
-            is_active:  true,
+            is_active:  false, // Phase 4: needs approval — not active until user promotes
+            needs_approval: true,
+            auto_learned: true,
             hit_count:  0,
           }).catch(() => {});
 
@@ -1136,7 +1147,13 @@ app.post('/auth/register', authLimiter, async (req, res) => {
     await supabase.from('subscriptions').insert({ user_id:user.id, plan:'free', status:'active', billing_cycle:'free', amount_paid:0, currency:location.currency });
 
     if (referrerId) {
-      await supabase.from('referrals').insert({ referrer_id:referrerId, referred_id:user.id, referred_signed_up:true, status:'pending' }).catch(() => {});
+      // Prevent self-referral (same user) — already impossible via email uniqueness, but double-check
+      if (String(referrerId) === String(user.id)) {
+        console.warn(JSON.stringify({ level:'warn', msg:'self-referral blocked', userId:user.id }));
+      } else {
+        const holdUntil = new Date(Date.now() + 14*24*60*60*1000).toISOString();
+        await supabase.from('referrals').insert({ referrer_id:referrerId, referred_id:user.id, referred_signed_up:true, status:'pending', hold_until: holdUntil, ip_address: req.ip }).catch(() => {});
+      }
     }
 
     const otp = generateOTP();
@@ -1598,6 +1615,16 @@ app.post('/whatsapp/products', authenticate, async (req, res) => {
     if ((count||0) >= limits.products_limit) return res.status(403).json({ success:false, error:`Product limit (${limits.products_limit}) reached. Upgrade to add more.` });
     const { data, error } = await supabase.from('products').insert({ user_id:req.user.id, name, description, price: priceNum, sale_price: sale_price?Number(sale_price):null, currency: cleanCurrency, type: cleanType, stock_quantity: stock_quantity?Number(stock_quantity):null, category, image_url: image_url ? sanitizeStr(image_url, 500) : null }).select().single();
     if (error) throw error;
+    // Atomic TOCTOU guard: re-check count after insert, rollback if limit exceeded (defense in depth until DB constraint is live)
+    try {
+      const { count: afterCount } = await supabase.from('products').select('id',{count:'exact',head:true}).eq('user_id', req.user.id);
+      const { limits: afterLimits } = await getUserSubscription(req.user.id);
+      if ((afterCount||0) > afterLimits.products_limit) {
+        await supabase.from('products').delete().eq('id', data.id).catch(()=>{});
+        invalidateSubscriptionCache(req.user.id);
+        return res.status(403).json({ success:false, error: `Product limit (${afterLimits.products_limit}) exceeded — upgrade required. This insert was rolled back.` });
+      }
+    } catch {}
     return res.status(201).json({ success:true, data, message:'Product added!' });
   } catch { return res.status(500).json({ success:false, error:'Failed to add product.' }); }
 });
@@ -1897,6 +1924,11 @@ app.post('/whatsapp/broadcasts', authenticate, async (req, res) => {
     if (!allowedSegments.has(target_segment)) return res.status(400).json({ success:false, error:'Invalid target_segment.' });
     const { limits } = await getUserSubscription(req.user.id);
     if (limits.whatsapp_broadcasts === 0) return res.status(403).json({ success:false, error:'Broadcasts require Creator plan or above.' });
+    try {
+      const since = new Date(new Date().setHours(0,0,0,0)).toISOString();
+      const { count: todayCount } = await supabase.from('broadcasts').select('id',{count:'exact',head:true}).eq('user_id', req.user.id).gte('created_at', since);
+      if ((todayCount||0) >= 5) return res.status(429).json({ success:false, error:'Daily broadcast limit (5/day) reached. Try tomorrow.' });
+    } catch {}
     const { data:settings } = await supabase.from('business_settings').select('*').eq('user_id',req.user.id).single();
     let cq = supabase.from('contacts').select('phone,name').eq('user_id',req.user.id).eq('opted_out',false).eq('is_blocked',false);
     if (target_segment!=='all') cq = cq.eq('segment',target_segment);
@@ -2581,7 +2613,10 @@ app.get('/analytics/overview', authenticate, async (req, res) => {
     ]);
     const totalRevenue = (revenue||[]).reduce((s,o) => s+(o.total||0), 0);
     const { subscription, plan } = await getUserSubscription(uid);
-    return res.json({ success:true, data:{ whatsapp:{ total_contacts:contacts||0, total_orders:orders||0, total_revenue:totalRevenue }, content:{ total_generated:content||0, total_published:published||0 }, subscription:{ plan, expires_at:subscription?.expires_at }, recent_orders:recent||[] } });
+    const payload = { whatsapp:{ total_contacts:contacts||0, total_orders:orders||0, total_revenue:totalRevenue }, content:{ total_generated:content||0, total_published:published||0 }, subscription:{ plan, expires_at:subscription?.expires_at }, recent_orders:recent||[] };
+    __analyticsCache.set(cacheKey, { v: payload, t: Date.now() });
+    res.setHeader('X-Cache', 'MISS');
+    return res.json({ success:true, data: payload });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch analytics.' }); }
 });
 
@@ -3217,15 +3252,23 @@ cron.schedule('*/5 * * * *', async () => {
   const { executed } = await withAdvisoryLock(supabase, 'cron:publish-due-posts', async () => {
   try {
     const now            = new Date().toISOString();
-    const fiveMinutesAgo = new Date(Date.now()-5*60*1000).toISOString();
-    const { data:due }   = await supabase.from('posts').select('*,content_items(*)').eq('status','scheduled').lte('scheduled_for',now).gte('scheduled_for',fiveMinutesAgo).limit(20);
-    if (!due?.length) return;
-    for (const post of due) {
+    const { data:due }   = await supabase.from('posts').select('*,content_items(*)').eq('status','scheduled').lte('scheduled_for',now).order('scheduled_for',{ascending:true}).limit(20);
+    // Also pick failed posts that are due for retry (next_retry_at <= now)
+    let retryDue = [];
+    try {
+      const { data: r } = await supabase.from('posts').select('*,content_items(*)').eq('status','failed').lte('next_retry_at', now).lt('attempts', 3).limit(5);
+      if (r?.length) retryDue = r;
+    } catch {}
+    const allDue = [...(due||[]), ...retryDue];
+    if (!allDue?.length) return;
+    for (const post of allDue) {
       await supabase.from('posts').update({ status:'posting' }).eq('id',post.id);
       const content = post.content_items;
       if (!content) { await supabase.from('posts').update({ status:'failed', error_log:{ global:'Content item not found' } }).eq('id',post.id); continue; }
       const { results, errors } = await publishContent(post, content);
-      const updateData = { status:Object.keys(errors).length===0?'published':'failed', published_at:new Date().toISOString(), error_log:Object.keys(errors).length?errors:null };
+      const hasErrors = Object.keys(errors).length > 0;
+      const nextAttempts = (post.attempts || 0) + 1;
+      const updateData = { attempts: nextAttempts, status: hasErrors ? (nextAttempts >= 3 ? 'dead_letter' : 'failed') : 'published', published_at: hasErrors ? null : new Date().toISOString(), next_retry_at: hasErrors && nextAttempts < 3 ? new Date(Date.now() + Math.pow(2, nextAttempts)*60*1000).toISOString() : null, last_error: hasErrors ? errors : null, error_log: hasErrors ? errors : null };
       if (results.instagram) { updateData.instagram_post_id=results.instagram.post_id; updateData.instagram_post_url=results.instagram.post_url; }
       if (results.facebook)  { updateData.facebook_post_id=results.facebook.post_id;   updateData.facebook_post_url=results.facebook.post_url; }
       if (results.tiktok)    { updateData.tiktok_post_id=results.tiktok.post_id;        updateData.tiktok_post_url=results.tiktok.post_url; }

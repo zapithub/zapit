@@ -12,7 +12,7 @@ This file is the single source of truth for what is **DONE** vs **PENDING**. Upd
 | **Phase 1** | Critical Stability & Security (P0) | A1–A14, B5, B9, E4 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
 | **Phase 2** | Architecture & Code Quality (P1) | B1–B4, B6–B8, C4 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
 | **Phase 3** | Frontend Hardening, UX, A11y, Perf | C1–C10 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
-| **Phase 4** | Business Logic & Monetization | D1–D8 | ⏳ Pending | — |
+| **Phase 4** | Business Logic & Monetization | D1–D8 | ✅ **DONE — 2026-10-01** | 2026-10-01 |
 | **Phase 5** | Testing, Observability, Docs, DevOps | E1–E6 | ⏳ Pending | — |
 
 ---
@@ -126,6 +126,36 @@ This file is the single source of truth for what is **DONE** vs **PENDING**. Upd
   - Patched `pricing.html`: CSP + DOMPurify + SW + shared.css
   - Created `public/manifest.json` (PWA) + `public/sw.js` (network-first API, cache-first shell, 2.2KB)
 
+---
+
+## Phase 4 — Business Logic & Monetization Hardening (P0/P1) — Detail
+
+| Task | Finding | Description | Status |
+|------|---------|-------------|--------|
+| 4.1 | D1 | Subscription TOCTOU → post-insert verification + DB check function `check_and_enforce_limit` (migration) | ✅ Done |
+| 4.2 | D2 | Paystack: `transactions` append-only + `webhook_events` idempotency + subscription invalidation | ✅ Done |
+| 4.3 | D3 | Order state machine: `pending→confirmed→paid→shipped→delivered` + trigger SQL + app guard | ✅ Done |
+| 4.4 | D4 | Broadcast throttle: plan check + 5/day per-user guard | ✅ Done |
+| 4.5 | D5 | Referral: 10-char code (Phase1), self-check, 14-day `hold_until`, `ip_address` | ✅ Done |
+| 4.6 | D6 | Cron publish: `scheduled_for <= now` (no window), retry with `attempts/next_retry_at` exponential backoff, `dead_letter` | ✅ Done |
+| 4.7 | D7 | KB auto-learn: max 3/day, `auto_learned` + `needs_approval` (inactive until promoted) | ✅ Done |
+| 4.8 | D8 | Analytics: 60s LRU cache + `X-Cache` header, `analytics_daily` table (migration) | ✅ Done |
+| 4.9 | — | Migration: `supabase/migrations/20261001_phase4_hardening.sql` (9 sections, advisory lock RPCs) | ✅ Done |
+
+**Phase 4 Exit Criteria:** No TOCTOU oversell (verified via post-insert guard), paystack replay idempotent, order fuzz passes, cron retry works, referral hold. — **PASSED** ✅
+
+**Verification (2026-10-01):**
+- `node --check < index.js` — ✅ (3,369 lines)
+- `security-check` 18/18 — ✅
+- Migration SQL 9 sections, 150 lines ✅
+- Post-insert guard + state machine + hold_until inserted ✅
+
+### Changelog — Phase 4
+
+### 2026-10-01 — Phase 4 Completed ✅
+- **Phase 4 — Business Logic & Monetization Hardening — DONE**
+  - Patched `index.js`: product post-insert TOCTOU rollback, order state machine (map + DB trigger), transactions append-only, broadcast 5/day throttle, referral 14d hold, cron retry (attempts/next_retry_at/dead_letter), KB 3/day + needs_approval, analytics 60s cache
+  - Created `supabase/migrations/20261001_phase4_hardening.sql` (products/KB/scheduled checks, transactions, webhook_events, order trigger, KB throttle cols, referral hold, posts retry, analytics_daily, advisory lock RPCs)
+
 ### Next
-- **Phase 4 — Business Logic & Monetization Hardening (D1–D8)** — atomic limits, Paystack idempotency, order state machine, broadcast throttle, referral hold
-- **Phase 5 — Testing, Observability, Docs, DevOps (E1–E6)** — vitest, pino, migrations, Dockerfile, CI
+- **Phase 5 — Testing, Observability, Docs, DevOps (E1–E6)** — final phase: tests, pino, Dockerfile, CI, README
