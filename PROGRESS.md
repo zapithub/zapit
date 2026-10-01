@@ -517,20 +517,48 @@ fixed first — the routing queries themselves could never have worked with it i
   - Tests: new `tests/unit/currency.test.mjs` (14th suite); `billing.test.mjs` extended with the £12/€12 refusals; `security-check` 116 → **128 checks**
   - **Verification:** `node --check` ✅, `npm test` 14 suites ✅, `security:check` 128/128 ✅, live `/pricing/location` + webhook-auth smoke ✅
 
+## Phase 7.5 — Exact analytics aggregates (D-05) — Detail
+
+| Task | Finding | Description | Status |
+|------|---------|-------------|--------|
+| 7.5.0 | **D-05** | PostgREST returns at most **1,000 rows per request**. Seven endpoints computed money and counts from a single read: `/analytics/overview` (all-time paid revenue), `/analytics/whatsapp` (period orders/revenue), `/analytics/content` (type histogram), `/analytics/revenue` (period totals + daily series), `/analytics/growth` (segment split + total contacts), `/analytics/export` (CSV), `/admin/revenue` (the whole ledger). Past 1,000 rows every one of them under-reported — silently | ✅ Done |
+| 7.5.1 | **D-05** | `supabase/migrations/20261010_phase7_05_analytics_aggregates.sql`: five `STABLE` SQL aggregates (`analytics_revenue_by_currency`, `…_by_day`, `…_content_by_type`, `…_contacts_by_segment`, `analytics_ledger_totals`) + supporting indexes; `REVOKE … FROM PUBLIC/anon/authenticated` + `GRANT EXECUTE … TO service_role`, so `analytics_ledger_totals()` (platform-wide revenue) can never be called from PostgREST with an app token | ✅ Done |
+| 7.5.2 | **D-05** | `src/utils/analytics.js`: each aggregate calls the RPC first and, when the migration is not applied yet, falls back to `fetchAllRows()` — a `range()` pager that reads **every** row in 1,000-row pages up to a 50,000-row cap, returning `{ rows, truncated, pages }`. A real (non-missing) RPC error is re-thrown so the endpoint 500s instead of quietly under-reporting | ✅ Done |
+| 7.5.3 | **D-05** | `/analytics/overview` also had a **dead cache write** (`__analyticsCache.set(cacheKey, …)` — neither symbol existed, so the endpoint threw `ReferenceError` and returned 500 on every call). It now uses a real TTL cache (`analyticsCache`, 60 s) with honest `X-Cache: HIT|MISS` | ✅ Done |
+| 7.5.4 | **B-05** | Revenue was summed across currencies (₦10,000 + $50 = "10,050"). Every revenue response now reports `by_currency` with a headline `currency` (the user's own, else the largest bucket) and `mixed_currency:true`, and `/analytics/export` gained a `currency` column | ✅ Done |
+| 7.5.5 | **D-05** | `/subscription/invoices` and `/referrals/history` were unbounded lists (capped at 1,000 with no hint). Both now paginate with `parsePagination` (`?page=&limit=`, max 100) and return `meta:{ total, page, limit, has_more }` | ✅ Done |
+| 7.5.6 | — | `tests/unit/analytics.test.mjs` (15th suite): the pager (short page, exact multiple, cap, mid-page error, empty), pure aggregation helpers, RPC-vs-paged parity, real-error propagation, **the regression itself — 1,001 paid orders must total 10,010, not 10,000** — and wiring/migration assertions. `security-check` 128 → **138 checks** | ✅ Done |
+
+**Phase 7.5 Exit criteria:** no aggregate is computed from a single capped page — **PASS ✅**; counts and revenue are exact before *and* after the migration — **PASS ✅**; a capped export/list says so (`truncated`, `meta.has_more`, `# NOTE:` line) — **PASS ✅**; tests + security checks green — **PASS ✅**.
+
+**Verification (2026-10-01):**
+- `node --input-type=module --check` on `index.js`/`src/utils/analytics.js` — ✅; `npm test` — **15 suites ✅**; `npm run security:check` — **138/138 ✅** (was 128)
+- `grep` invariants: no `orders.select('total')` / `content_items.select('type')` / `contacts.select('segment')` aggregate reads remain; all five aggregates are wired; `__analyticsCache` is gone ✅
+- Live dev (port 3092): `/analytics/*` unauth → 401 for all 9 endpoints; health 200; integration suite 7/7
+- **Real-client proof (2026-10-01):** a zero-dep fake PostgREST holding 1,001 paid orders was driven through the real `@supabase/supabase-js` client — (A) with the RPC missing (404 `PGRST202`) the paged fallback returned **1,001 orders / 10,010** (`pages=2`, `truncated=false`), where the old code returned 1,000 / 10,000; (B) with the RPC present it returned the same totals in **one** call and **zero** row reads
+
+### 2026-10-01 — Phase 7.5 Completed ✅ — Exact analytics aggregates (D-05)
+- **Phase 7.5 — DONE**
+  - `supabase/migrations/20261010_phase7_05_analytics_aggregates.sql`: five SQL aggregates + indexes, service-role-only execution
+  - `src/utils/analytics.js`: RPC-first aggregation with a complete `range()` paging fallback (50k cap, truncation reported), per-currency grouping, real errors surfaced
+  - `index.js`: overview (and its previously broken cache), WhatsApp, content, revenue, growth, export, admin revenue all use the aggregates; invoices + referral history paginate with `meta.has_more`
+  - Tests: `tests/unit/analytics.test.mjs` (15th suite, incl. the 1,001-row regression); `security-check` 128 → **138 checks**
+  - **Verification:** `node --check` ✅, `npm test` 15 suites ✅, `security:check` 138/138 ✅, live smoke ✅
+
 ## Final Summary (2026-10-01)
 
 | Metric | Before | After |
 |--------|--------|-------|
 | Critical findings | 11 | 0 |
 | High findings | 14 | 0 |
-| Security check | — | 128/128 ✅ (Phase 7.4) |
-| Tests | 0 | 14 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth, session, cookies, quota, currency) |
+| Security check | — | 138/138 ✅ (Phase 7.5) |
+| Tests | 0 | 15 suites ✅ (incl. admin, webhook, tenantRouting, billing, otp, oauth, session, cookies, quota, currency, analytics) |
 | Docs | 2 lines | 150+ lines + 5 docs |
-| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 4,071 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE · 7.2 sessions+cookies · 7.3 quotas · 7.4 one price resolver + currency-pinned webhook), modular imports, allowlist, spawn, cache, locks |
+| `index.js` | 3,073 LOC monolith, wide-open CORS, exec ffmpeg | 4,117 LOC hardened (6.1 admin/WA strict · 6.2 HMAC webhook · 6.3 routing + W-14 · 6.4 billing guardrails · 6.5 OTP/allow-lists/XFF · 7.1 OAuth state+PKCE · 7.2 sessions+cookies · 7.3 quotas · 7.4 one price resolver + currency-pinned webhook · 7.5 exact analytics aggregates), modular imports, allowlist, spawn, cache, locks |
 | Frontend | 4× duplicated tokens, hardcode, 45 raw innerHTML | shared.css, pricing.json, DOMPurify+CSP, PWA, a11y focus trap |
-| DB | no migrations | 9 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout, 7.1 OAuth state, 7.2 hashed sessions, 7.3 usage counters) + advisory locks (7.4 needs none — it is a code-only fix) |
+| DB | no migrations | 10 migrations (Phase 4 hardening, 6.1 admin, 6.2 webhook replay, 6.3 shared routing, 6.4 billing guardrails, 6.5 OTP lockout, 7.1 OAuth state, 7.2 hashed sessions, 7.3 usage counters, 7.5 analytics aggregates) + advisory locks (7.4 is code-only) |
 
-**Next steps for the team:** Run `supabase db push` — apply the pending migrations `20261002`…**`20261009`** (`20261001` too if the Phase 4 hardening was never pushed) — then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`; set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN` + `TRUST_PROXY=false` (unless genuinely behind a trusted proxy); share `GET /whatsapp/qr-code` route codes with free-plan users; create the Stripe/RDP-free Paystack account currencies you intend to charge (GBP/EUR are **not** settleable by Paystack — GB/EU customers are billed the USD price as USD); then continue **Phase 7.5 (analytics counts)** → Phase 8 → 9 → 10, before paid traffic per Phase 0 §A.4. Phases 6.1–6.5 + 7.1–7.4 closed — **all P0 audit findings + the 6.5 P1s + B-05/B-06/B-09 resolved**. 🎉
+**Next steps for the team:** Run `supabase db push` — apply the pending migrations `20261002`…**`20261010`** (`20261001` too if the Phase 4 hardening was never pushed) — then `UPDATE users SET role='admin' WHERE email='ADMIN_SEED_EMAIL'`; set `NODE_ENV=production` + strong secrets incl. **`WA_APP_SECRET`**/**`PAYSTACK_SECRET_KEY`** + unique `WA_VERIFY_TOKEN` + `TRUST_PROXY=false` (unless genuinely behind a trusted proxy); share `GET /whatsapp/qr-code` route codes with free-plan users; create the Stripe/RDP-free Paystack account currencies you intend to charge (GBP/EUR are **not** settleable by Paystack — GB/EU customers are billed the USD price as USD); then continue **Phase 7.5 (analytics counts)** → Phase 8 → 9 → 10, before paid traffic per Phase 0 §A.4. Phases 6.1–6.5 + 7.1–7.4 closed — **all P0 audit findings + the 6.5 P1s + B-05/B-06/B-09 resolved**. 🎉
 
 ---
 

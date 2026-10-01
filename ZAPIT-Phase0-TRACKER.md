@@ -1,6 +1,6 @@
 # ZAPIT — Phase 0 Master Audit → Tracker (New Attachment)
 **Source:** `ZAPIT — Master Codebase Audit, Architecture Review & World-Class Upgrade Blueprint` (30 Sep 2026, Phase 0, no code modified) — pasted by user 2026-10-01  
-**Current codebase:** `arena/01a0f67b-zapit` after Phases 1–5 + **6.1–6.5 + 7.1–7.4** (47 findings → 0 Critical, plus new audit: S-01/S-02/S-05/S-06/S-07/S-13/S-15/S-16/S-22/W-07 + **W-14 (new)** all FIXED, B-05 FIXED 7.4, `npm test` 14 suites + `security:check` 128/128 + live E2E)  
+**Current codebase:** `arena/01a0f67b-zapit` after Phases 1–5 + **6.1–6.5 + 7.1–7.5** (47 findings → 0 Critical; new audit S-01/S-02/S-05/S-06/S-07/S-13/S-15/S-16/S-22/W-07 + **W-14 (new)** + B-05/B-06/B-09/D-05 all FIXED, `npm test` 15 suites + `security:check` 138/138 + live E2E)  
 **Rule:** Do in phases, report Done vs Pending, no shortcut, finish stage before next. This file is the single source of truth for the **NEW** audit.
 
 > **Evidence labels per §0.1:** FACT/OBSERVATION/RISK/RECOMMENDATION as in Phase 0. Priorities P0/P1/P2/P3 as in §12.
@@ -65,7 +65,7 @@ Our prior `CONSULTANT_REVIEW.md` (47 findings) covered security, architecture, f
 | **C-03** | YouTube sends JSON only, no media | P1 | L | 🔴 OPEN | Phase 9 |
 | **C-04** | IG URL/30s sleep, FB ignores video, TikTok `PULL_FROM_URL` unverified | P1 | L | 🔴 OPEN | Phase 9 |
 | **C-05** | Automation `next_generation_at` never set, caption-only | P1 | M | 🔴 OPEN | Phase 9 |
-| **D-05** | 1,000-row truncation in analytics/revenue | P1 | S–M | 🟡 PARTIAL — pagination max 100 added in Phase 2, but analytics still `count` then `select` loops that can truncate | Phase 7 |
+| **D-05** | 1,000-row truncation in analytics/revenue | P1 | S–M | ✅ **FIXED 7.5** — five SQL aggregates (migration `20261010`, service-role only) + a complete `range()` paging fallback; overview/WhatsApp/content/revenue/growth/export/admin-revenue are exact past 1,000 rows; revenue is per-currency; invoices + referral history paginate with `meta.has_more`; the broken overview cache (ReferenceError → 500) replaced by a real TTL cache | **DONE 7.5** |
 | **S-15** | OTP `Math.random`, plaintext, no per-code lockout, email existence oracle | P1 | S | ✅ **FIXED 6.5** — `crypto.randomInt` codes, sha256 at rest, real per-code lockout (5 wrong guesses → 429, code dead), constant-time compare, uniform forgot-password latency, neutral register message | ✅ 2026-10-01 |
 | **S-16** | Mass assignment (`{...req.body}`) on 7 PATCH routes | P1 | S | ✅ **FIXED 6.5** — `pickFields()` allow-lists with type/enum/range validation on all 7 routes (+ admin global-kb); ids, `user_id`, `payment_status`, totals, counters are unreachable | ✅ 2026-10-01 |
 | **…** | *Remaining P1/P2s (S-17–S-28, D-01–D-11, U-01–U-18 etc.)* | — | — | See full Phase 0 §12 — most remain **OPEN** | Phases 7–10 |
@@ -89,7 +89,8 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 | **7.2** | **P1 — Auth Tokens & Browser Session** | S-08, S-09 | P1 | M | ✅ **DONE 2026-10-01** — 15-min access tokens, hashed `sessions` with rotation + family revocation on reuse, httpOnly cookie path with double-submit CSRF, no `?token=` in URLs; migration `20261008`; 12 suites, 107/107 checks |
 | **7.3** | **P1 — Quotas & Monthly Accounting** | B-06, B-09 | P1 | M | ✅ **DONE 2026-10-01** — period-scoped `usage_counters` + atomic `consume_usage`; every advertised quota enforced (generation, carousel per slide, regeneration, broadcasts, replies); filtered legacy reset + prune; migration `20261009`; 13 suites, 116/116 checks |
 | **7.4** | **P1 — Currency-Correct Checkout & Verification** | B-05 | P1 | M | ✅ **DONE 2026-10-01** — single price resolver; only NGN/GHS/ZAR/KES/USD are charged; GBP/EUR → USD price reported as USD (never relabelled); webhook pins currency + exact minor amount to the resolver; 14 suites, 128/128 checks |
-| **7** | **P1 — Auth, Quotas, Money Correctness** | S-07, S-08, S-09, S-14, B-05, B-06, B-09, D-05, S-15/16/17, S-12 follow-up | P1 | L | OAuth nonce+PKCE, JWT 15m + hashed refresh, httpOnly cookie path documented, Paystack amount matrix, usage_counters + middleware, reset cron filtered, analytics `count` not truncated |
+| **7.5** | **P1 — Exact Analytics Aggregates** | D-05 | P1 | M | ✅ **DONE 2026-10-01** — SQL aggregates + paging fallback (no 1,000-row truncation), per-currency revenue, paginated lists with `meta.has_more`, broken overview cache fixed; migration `20261010`; 15 suites, 138/138 checks |
+| **7** | **P1 — Auth, Quotas, Money Correctness** | S-07, S-08, S-09, S-14, B-05, B-06, B-09, D-05, S-15/16/17, S-12 follow-up | P1 | L | ✅ **DONE 2026-10-01 (7.1–7.5)** — OAuth nonce+PKCE, JWT 15 m + hashed refresh + cookie path, Paystack amount matrix, usage_counters + middleware, filtered reset, exact analytics aggregates | **DONE** |
 | **8** | **P1 — Core Loop: Orders & Payments in Chat** | W-01, W-02, W-03 (templates), W-04 (dedup), W-07 done, N-1/N-2 | P1 | XL | Customer can type quantity/address → order row + `generateOrderNumber` + Paystack link/bank ref → webhook marks `paid` → confirmation; welcome bug fixed; STOP handled; human takeover flag |
 | **9** | **P1 — Rebuild Social Publishing** | C-01–C-08, P1 | L | Rebuild publishing layer in worker: correct Page/IG ids, long-lived token exchange, refresh job, YouTube multipart, lease-based scheduler (no 5-min window) |
 | **10** | **P1/P2 — UX, Trust, Compliance** | U-01–U-18, §3.6 NDPA, §6 premium system | P1/P2 | L | `U-01` reload not logout (refresh flow), privacy/terms real pages, consent versioned, Today/Sell/Grow/Account IA, `aria-live` etc. already, health `readyz` |
@@ -106,7 +107,7 @@ We keep the **5-phase foundation you approved (1–5 DONE)** and **continue as P
 
 **PENDING (must still do, in order):**
 - **Phase 6.5 DONE:** S-13, S-15, S-16, S-22 — **all P0 + 6.5 P1s closed** (S-06 in 6.3, B-01/B-02/B-04/B-07 in 6.4, S-05 in 6.2, S-01/S-22/W-07 in 6.1)
-- **Phase 7.5:** D-05 (analytics truncation) — S-07 closed in 7.1, S-08/S-09 in 7.2, B-06/B-09 in 7.3, B-05 in 7.4; S-14 closed in 6.4; S-13/S-15/S-16 closed in 6.5
+- **Phase 7 complete (7.1–7.5).** Next: **Phase 8** (core loop) → 9 (social) → 10 (UX/NDPA). S-07 closed in 7.1, S-08/S-09 in 7.2, B-06/B-09 in 7.3, B-05 in 7.4, D-05 in 7.5; S-14 closed in 6.4; S-13/S-15/S-16 closed in 6.5
 - **Phase 8:** W-01 core loop (largest), W-02–W-04, N-1/N-2
 - **Phase 9:** C-01–C-08 rebuild
 - **Phase 10:** U-01–U-18, NDPA
@@ -271,3 +272,19 @@ entirely requires the Phase 7 auth rework (soft-accept + owner notification + CA
 - `npm test` (14 suites) + `npm run security:check` (128/128) + `node --check` green — **PASS ✅ (2026-10-01)**
 
 **DONE 7.4:** B-05. **Pending in Phase 7:** 7.5 D-05 (analytics truncation) → 8 (core loop) → 9 (social) → 10 (UX/NDPA).
+
+
+## 5h. Phase 7.5 — Exit criteria & evidence (DONE 2026-10-01)
+
+**Deliverables:** `supabase/migrations/20261010_phase7_05_analytics_aggregates.sql` (5 SQL aggregates + indexes + service-role-only grants), `src/utils/analytics.js` (RPC-first aggregates, `fetchAllRows()` paging fallback, per-currency grouping, `headlineCurrency`), `index.js` (overview incl. fixed TTL cache, WhatsApp, content, revenue, growth, export, admin revenue, paginated invoices + referrals), `tests/unit/analytics.test.mjs` (15th suite), `scripts/security-check.mjs` 128 → 138, `docs/API.md` ("Analytics aggregates").
+
+**Exit criteria (tracker L68, D-05 slice):**
+- no aggregate computed from one capped page — **PASS ✅** (SQL aggregate, or every row paged up to a reported cap)
+- exact before *and* after migration `20261010` — **PASS ✅** (RPC-first, `PGRST202` → paged fallback; a real RPC error 500s instead of under-reporting)
+- more than 1,000 rows is the regression under test — **PASS ✅** (1,001 paid orders total 10,010 in `analytics.test.mjs`)
+- truncation is never silent — **PASS ✅** (`truncated`, `meta.has_more`, `# NOTE:` line in the CSV)
+- multi-currency money never summed across currencies — **PASS ✅** (`by_currency` + `mixed_currency`; export carries a currency column)
+- `npm test` (15 suites) + `npm run security:check` (138/138) + `node --check` green — **PASS ✅ (2026-10-01)**
+- Real-client proof: 1,001 orders through the actual `@supabase/supabase-js` against a fake PostgREST → RPC-missing path pages to **1,001 / 10,010** (old: 1,000 / 10,000), RPC path returns the same totals in one call with zero row reads — **PASS ✅**
+
+**DONE 7.5:** D-05. **Phase 7 complete (7.1–7.5).** Next: **Phase 8** (core loop) → 9 (social) → 10 (UX/NDPA).

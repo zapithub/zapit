@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ZAPIT — Security smoke check for CI (Phases 1–7.4)
+// ZAPIT — Security smoke check for CI (Phases 1–7.5)
 // Fails (exit 1) if any critical invariant is violated.
 // No external deps, runs on Node 18+.
 
@@ -452,6 +452,44 @@ try {
   else pass('Currency tests pin the fallback + checkout/webhook parity (B-05)');
 } catch { fail('tests/unit/currency.test.mjs missing (B-05)'); }
 
+// ── Phase 7.5 — analytics aggregates are exact, never a capped page (D-05) ──
+try {
+  const a = fs.readFileSync('src/utils/analytics.js','utf8');
+  for (const fn of ['fetchAllRows','revenueTotals','revenueByDay','contentByType','contactsBySegment','ledgerTotals'])
+    if (!a.includes(`export async function ${fn}`) && !a.includes(`export function ${fn}`)) fail(`analytics util lacks ${fn} (D-05)`);
+  if (!a.includes('.range(from, from + pageSize - 1)')) fail('analytics util does not page PostgREST reads (D-05)');
+  else pass('Analytics util reads every page (no 1,000-row truncation) (D-05)');
+  if (!a.includes('isRpcMissing(rpc.error)')) fail('analytics util does not fall back when the aggregate RPC is missing (D-05)');
+  else pass('Analytics aggregates prefer SQL, fall back to paging (D-05)');
+  if (!a.includes('ANALYTICS_MAX_ROWS')) fail('analytics paging has no cap (D-05)');
+  else pass('Analytics paging is capped and reports truncation (D-05)');
+} catch { fail('src/utils/analytics.js missing (D-05)'); }
+try {
+  if (/from\('orders'\)\.select\('total'\)/.test(indexJs)) fail('all-time revenue is still read from one capped page (D-05)');
+  else pass('No analytics aggregate is computed from a single capped page (D-05)');
+  if (!indexJs.includes('revenueTotals(') || !indexJs.includes('ledgerTotals(')) fail('/analytics + /admin/revenue do not use the aggregates (D-05)');
+  else pass('Analytics and admin revenue use the aggregates (D-05)');
+  if (indexJs.includes('__analyticsCache')) fail('the undefined analytics cache reference is back (D-05)');
+  else pass('Overview cache is a real TTL cache, not a ReferenceError (D-05)');
+  if (!indexJs.includes('export capped at')) fail('a capped CSV export does not say so (D-05)');
+  else pass('Capped exports declare the cap in the file (D-05)');
+  if (!indexJs.includes('from_currency') && !indexJs.includes('by_currency')) fail('revenue responses do not separate currencies (B-05/D-05)');
+  else pass('Revenue is reported per currency, never as one mixed sum (B-05)');
+} catch { fail('index.js missing for the D-05 checks'); }
+try {
+  const mig = fs.readFileSync('supabase/migrations/20261010_phase7_05_analytics_aggregates.sql','utf8');
+  const fns = ['analytics_revenue_by_currency','analytics_revenue_by_day','analytics_content_by_type','analytics_contacts_by_segment','analytics_ledger_totals'];
+  const missing = fns.filter(f => !mig.includes(`FUNCTION ${f}`));
+  if (missing.length) fail(`Phase 7.5 migration lacks: ${missing.join(', ')}`);
+  else if (!mig.includes('REVOKE ALL ON FUNCTION')) fail('Phase 7.5 aggregates are callable by app roles');
+  else pass('Phase 7.5 migration present (aggregates + service-only grants)');
+} catch { fail('Phase 7.5 migration file missing'); }
+try {
+  const t = fs.readFileSync('tests/unit/analytics.test.mjs','utf8');
+  if (!t.includes('the old code returned 10,000')) fail('analytics test does not pin the 1,001-row regression (D-05)');
+  else pass('Analytics test pins the 1,001st row (D-05)');
+} catch { fail('tests/unit/analytics.test.mjs missing (D-05)'); }
+
 // validation single-source + migration
 try {
   const v = fs.readFileSync('src/utils/validation.js','utf8');
@@ -466,8 +504,8 @@ try {
 
 console.log('');
 if (fails) {
-  console.error(`\n${fails} check(s) failed — Phase 7.4 hardening not done.`);
+  console.error(`\n${fails} check(s) failed — Phase 7.5 hardening not done.`);
   process.exit(1);
 } else {
-  console.log('All security checks passed (Phases 1–7.4). ✅');
+  console.log('All security checks passed (Phases 1–7.5). ✅');
 }

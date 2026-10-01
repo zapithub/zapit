@@ -154,6 +154,31 @@ Metered per **UTC calendar month**, one counter row per `(user, metric, period)`
 Exceeding a quota returns `403` with `{ success:false, code:'quota_exceeded', error, data:{ metric, used, limit } }`. `GET /subscription/current` returns `usage.monthly` with the live counters. A new month starts a **new period row**, so nothing is reset (this replaces the old, broken monthly-reset cron).
 
 
+## Analytics aggregates (Phase 7.5 — D-05)
+
+PostgREST returns at most **1,000 rows per request**, so any figure computed from a single read could
+be a silent undercount. Every analytics number is now computed by Postgres (migration
+`20261010_phase7_05_analytics_aggregates.sql`) and, until that migration is applied, by reading **every**
+matching row with `range()` paging (`src/utils/analytics.js`):
+
+| Endpoint | Aggregate | Response extras |
+|----------|-----------|-----------------|
+| `GET /analytics/overview` | orders + paid revenue per currency, exact contact/content/published counts | `paid_orders`, `currency`, `by_currency`, `mixed_currency`, `revenue_source`; 60 s in-process cache (`X-Cache: HIT\|MISS`) |
+| `GET /analytics/whatsapp` | period orders/paid/revenue per currency | `currency`, `by_currency`, `source` |
+| `GET /analytics/content` | content-type histogram | `by_type` (all types), `source` |
+| `GET /analytics/revenue` | period revenue per currency + paid-per-day series | `by_currency`, `mixed_currency`, `source`, `truncated` |
+| `GET /analytics/growth` | contacts per segment + exact total | `source` |
+| `GET /analytics/export` | full CSV (paged, cap 50,000 rows/section) | a `# NOTE:` line is appended when capped |
+| `GET /admin/revenue` | ledger totals by plan **and** currency | `by_currency`, `mixed_currency`, `ledger_rows`, `source`, `truncated` |
+
+**Multi-currency rule (B-05):** amounts in different currencies are never summed together. Responses
+carry `by_currency` and a headline `currency` (the user's own, else the largest bucket); `mixed_currency:true`
+tells the UI more than one currency is involved. `source` is `"rpc"` (SQL aggregate) or `"paged"`
+(pre-migration fallback).
+
+`GET /subscription/invoices` and `GET /referrals/history` accept `?page=&limit=` (max 100) and return
+`meta:{ total, page, limit, has_more }` — unbounded lists previously stopped at 1,000 rows silently.
+
 ## Pagination
 
 List endpoints accept `?page=1&limit=20` (max 100). Response includes `meta: { total, page, limit }` or `pagination`.

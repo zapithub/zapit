@@ -28,3 +28,4 @@ class LRU {
 
 export const subscriptionCache = new LRU(2000, 60_000);
 export const pricingCache = new LRU(500, 300_000); // 5m
+export const analyticsCache = new LRU(500, 60_000); // D-05: dashboard overview, 60s TTL

@@ -20,7 +20,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { PLAN_LIMITS as __SRC_PLAN_LIMITS, getPricingForLocation as __srcGetPricing, formatPrice as __srcFormat } from './src/config/plans.js';
-import { subscriptionCache } from './src/utils/cache.js';
+import { subscriptionCache, analyticsCache } from './src/utils/cache.js';
 import { withAdvisoryLock } from './src/utils/distributedLock.js';
 import { parsePagination, isValidEmail, isValidUsername, isStrongPassword, sanitizeStr, validateBody, pickFields } from './src/utils/validation.js';
 import { generateOTP, hashOTP, verifyOTPRecord, attemptsAfterFailure, OTP_MAX_ATTEMPTS, OTP_TTL_MS } from './src/utils/otp.js';
@@ -31,6 +31,7 @@ import { newOAuthState, hashState, newPkcePair, stateDecision, sanitizeProviderE
 import { ACCESS_TOKEN_TTL, ACCESS_TOKEN_TTL_SEC, hashToken, newFamilyId, newSessionRow, legacySessionRow, isSessionReuse, isSessionActive, isMissingColumnError, REUSE_REASON } from './src/utils/session.js';
 import { AUTH_ACCESS_COOKIE, AUTH_REFRESH_COOKIE, parseCookies, isMutating, csrfMatches, setAuthCookies, clearAuthCookies } from './src/utils/cookies.js';
 import { METRICS, quotaGuard, consumeQuota, quotaExceededBody, usageSnapshot, metricForContentType, periodStart } from './src/utils/quota.js';
+import { revenueTotals, revenueByDay, contentByType, contactsBySegment, ledgerTotals, fetchAllRows, headlineCurrency, ANALYTICS_MAX_ROWS } from './src/utils/analytics.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -3144,22 +3145,41 @@ app.post('/content/templates/:id/use', authenticate, contentLimiter, async (req,
 app.get('/analytics/overview', authenticate, async (req, res) => {
   try {
     const uid = req.user.id;
+    const cacheKey = `overview:${uid}`;
+    const cached = analyticsCache.get(cacheKey);
+    if (cached) { res.setHeader('X-Cache','HIT'); return res.json({ success:true, data:cached }); }
     const [
       { count:contacts },  { count:orders },
-      { data:revenue },    { count:content },
-      { count:published }, { data:recent },
+      { count:content },   { count:published },
+      { data:recent },     revenue,
     ] = await Promise.all([
       supabase.from('contacts').select('id',{ count:'exact', head:true }).eq('user_id',uid),
       supabase.from('orders').select('id',{ count:'exact', head:true }).eq('user_id',uid),
-      supabase.from('orders').select('total').eq('user_id',uid).eq('payment_status','paid'),
       supabase.from('content_items').select('id',{ count:'exact', head:true }).eq('user_id',uid),
       supabase.from('posts').select('id',{ count:'exact', head:true }).eq('user_id',uid).eq('status','published'),
-      supabase.from('orders').select('order_number,total,status,created_at').eq('user_id',uid).order('created_at',{ ascending:false }).limit(5),
+      supabase.from('orders').select('order_number,total,currency,status,created_at').eq('user_id',uid).order('created_at',{ ascending:false }).limit(5),
+      // D-05: exact totals (SQL aggregate, or every row paged) — never one capped page.
+      revenueTotals(supabase, { userId: uid }),
     ]);
-    const totalRevenue = (revenue||[]).reduce((s,o) => s+(o.total||0), 0);
+    const headline  = headlineCurrency(revenue.byCurrency, req.user.currency);
+    const mine      = revenue.byCurrency[headline] || { orders:0, paid:0, revenue:0 };
     const { subscription, plan } = await getUserSubscription(uid);
-    const payload = { whatsapp:{ total_contacts:contacts||0, total_orders:orders||0, total_revenue:totalRevenue }, content:{ total_generated:content||0, total_published:published||0 }, subscription:{ plan, expires_at:subscription?.expires_at }, recent_orders:recent||[] };
-    __analyticsCache.set(cacheKey, { v: payload, t: Date.now() });
+    const payload = {
+      whatsapp:{
+        total_contacts:contacts||0,
+        total_orders:orders||0,
+        paid_orders:mine.paid,
+        total_revenue:mine.revenue,
+        currency:headline,
+        by_currency:revenue.byCurrency,
+        mixed_currency:Object.keys(revenue.byCurrency).length > 1,
+        revenue_source:revenue.source,
+      },
+      content:{ total_generated:content||0, total_published:published||0 },
+      subscription:{ plan, expires_at:subscription?.expires_at },
+      recent_orders:recent||[],
+    };
+    analyticsCache.set(cacheKey, payload);
     res.setHeader('X-Cache', 'MISS');
     return res.json({ success:true, data: payload });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch analytics.' }); }
@@ -3171,14 +3191,15 @@ app.get('/analytics/whatsapp', authenticate, async (req, res) => {
     const days      = req.query.period==='7d' ? 7 : 30;
     const startDate = new Date(Date.now()-days*24*60*60*1000).toISOString();
     const uid       = req.user.id;
-    const [{ count:newContacts },{ data:orders },{ data:settings }] = await Promise.all([
+    const [{ count:newContacts },{ data:settings }, totals] = await Promise.all([
       supabase.from('contacts').select('id',{ count:'exact', head:true }).eq('user_id',uid).gte('created_at',startDate),
-      supabase.from('orders').select('total,payment_status,created_at').eq('user_id',uid).gte('created_at',startDate),
       supabase.from('business_settings').select('reply_count').eq('user_id',uid).single(),
+      // D-05: period totals per currency, computed in SQL (or fully paged).
+      revenueTotals(supabase, { userId:uid, since:startDate }),
     ]);
-    const paid    = (orders||[]).filter(o => o.payment_status==='paid');
-    const revenue = paid.reduce((s,o) => s+(o.total||0), 0);
-    return res.json({ success:true, data:{ period:`Last ${days} days`, new_contacts:newContacts||0, total_messages:settings?.reply_count||0, total_orders:(orders||[]).length, paid_orders:paid.length, revenue, conversion_rate:(orders||[]).length>0?Math.round((paid.length/(orders||[]).length)*100):0 } });
+    const headline = headlineCurrency(totals.byCurrency, req.user.currency);
+    const mine     = totals.byCurrency[headline] || { orders:0, paid:0, revenue:0 };
+    return res.json({ success:true, data:{ period:`Last ${days} days`, new_contacts:newContacts||0, total_messages:settings?.reply_count||0, total_orders:mine.orders, paid_orders:mine.paid, revenue:mine.revenue, currency:headline, by_currency:totals.byCurrency, mixed_currency:Object.keys(totals.byCurrency).length>1, conversion_rate:mine.orders>0?Math.round((mine.paid/mine.orders)*100):0, source:totals.source } });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch WhatsApp analytics.' }); }
 });
 
@@ -3188,14 +3209,15 @@ app.get('/analytics/content', authenticate, async (req, res) => {
     const days      = req.query.period==='7d' ? 7 : 30;
     const startDate = new Date(Date.now()-days*24*60*60*1000).toISOString();
     const uid       = req.user.id;
-    const [{ count:generated },{ count:pubCount },{ data:types }] = await Promise.all([
+    const [{ count:generated },{ count:pubCount }, types] = await Promise.all([
       supabase.from('content_items').select('id',{ count:'exact', head:true }).eq('user_id',uid).gte('created_at',startDate),
       supabase.from('posts').select('id',{ count:'exact', head:true }).eq('user_id',uid).eq('status','published').gte('published_at',startDate),
-      supabase.from('content_items').select('type').eq('user_id',uid).gte('created_at',startDate),
+      // D-05: the type histogram counted at most 1,000 rows before.
+      contentByType(supabase, { userId:uid, since:startDate }),
     ]);
     const byType = { video:0, image:0, text:0, carousel:0 };
-    (types||[]).forEach(i => { if (byType[i.type]!==undefined) byType[i.type]++; });
-    return res.json({ success:true, data:{ period:`Last ${days} days`, total_generated:generated||0, total_published:pubCount||0, by_type:byType } });
+    for (const [k,v] of Object.entries(types.byType)) byType[k] = v;
+    return res.json({ success:true, data:{ period:`Last ${days} days`, total_generated:generated||0, total_published:pubCount||0, by_type:byType, source:types.source } });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch content analytics.' }); }
 });
 
@@ -3217,26 +3239,28 @@ app.get('/analytics/revenue', authenticate, async (req, res) => {
   try {
     const days      = parseInt(String(req.query.period||'30'))||30;
     const startDate = new Date(Date.now()-days*24*60*60*1000).toISOString();
-    const { data:orders } = await supabase.from('orders').select('total,currency,payment_status,created_at').eq('user_id',req.user.id).gte('created_at',startDate).order('created_at',{ ascending:true });
-    const paid      = (orders||[]).filter(o => o.payment_status==='paid');
-    const total     = paid.reduce((s,o) => s+(o.total||0), 0);
-    const avg       = paid.length>0 ? total/paid.length : 0;
-    const byDay     = {};
-    paid.forEach(o => { const d=o.created_at.substring(0,10); byDay[d]=(byDay[d]||0)+(o.total||0); });
-    return res.json({ success:true, data:{ total_revenue:total, total_orders:paid.length, average_order_value:Math.round(avg), by_day:byDay, currency:req.user.currency||'NGN' } });
+    // D-05: totals + daily series are aggregated in SQL (or fully paged) and are
+    // never a mixed-currency sum — each currency is reported on its own.
+    const totals   = await revenueTotals(supabase, { userId:req.user.id, since:startDate });
+    const headline = headlineCurrency(totals.byCurrency, req.user.currency);
+    const mine     = totals.byCurrency[headline] || { orders:0, paid:0, revenue:0 };
+    const days_    = await revenueByDay(supabase, { userId:req.user.id, since:startDate, currency:headline });
+    const avg      = mine.paid>0 ? mine.revenue/mine.paid : 0;
+    return res.json({ success:true, data:{ total_revenue:mine.revenue, total_orders:mine.paid, average_order_value:Math.round(avg), by_day:days_.byDay, currency:headline, by_currency:totals.byCurrency, mixed_currency:Object.keys(totals.byCurrency).length>1, source:(totals.source==='rpc'&&days_.source==='rpc')?'rpc':'paged', truncated:Boolean(totals.truncated||days_.truncated) } });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch revenue analytics.' }); }
 });
 
 // GET /analytics/growth
 app.get('/analytics/growth', authenticate, async (req, res) => {
   try {
-    const [{ data:accounts },{ data:contacts }] = await Promise.all([
+    const [{ data:accounts }, segments] = await Promise.all([
       supabase.from('connected_accounts').select('platform,total_posts,last_posted_at').eq('user_id',req.user.id),
-      supabase.from('contacts').select('segment').eq('user_id',req.user.id),
+      // D-05: the segment split + total were computed from one capped page.
+      contactsBySegment(supabase, { userId:req.user.id }),
     ]);
     const bySegment = { lead:0, customer:0, vip:0 };
-    (contacts||[]).forEach(c => { if (bySegment[c.segment]!==undefined) bySegment[c.segment]++; });
-    return res.json({ success:true, data:{ social_accounts:accounts||[], contacts_by_segment:bySegment, total_contacts:(contacts||[]).length } });
+    for (const [k,v] of Object.entries(segments.bySegment)) bySegment[k] = v;
+    return res.json({ success:true, data:{ social_accounts:accounts||[], contacts_by_segment:bySegment, total_contacts:segments.total, source:segments.source } });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch growth analytics.' }); }
 });
 
@@ -3253,15 +3277,23 @@ app.get('/analytics/best-times', authenticate, (_req, res) => {
 // GET /analytics/export
 app.get('/analytics/export', authenticate, async (req, res) => {
   try {
-    const [{ data:orders },{ data:contacts }] = await Promise.all([
-      supabase.from('orders').select('order_number,customer_name,total,payment_status,status,created_at').eq('user_id',req.user.id),
-      supabase.from('contacts').select('name,phone,segment,total_orders,total_spent').eq('user_id',req.user.id),
+    // D-05: an export must contain every row — page through them (up to the cap)
+    // instead of silently shipping the first 1,000.
+    const [ordersPage, contactsPage] = await Promise.all([
+      fetchAllRows(() => supabase.from('orders').select('order_number,customer_name,total,currency,payment_status,status,created_at').eq('user_id',req.user.id)),
+      fetchAllRows(() => supabase.from('contacts').select('name,phone,segment,total_orders,total_spent').eq('user_id',req.user.id)),
     ]);
+    if (ordersPage.error || contactsPage.error) throw (ordersPage.error || contactsPage.error);
+    const orders   = ordersPage.rows;
+    const contacts = contactsPage.rows;
     const csv = [
-      '=== ORDERS ===', 'order_number,customer,total,payment,status,date',
-      ...(orders||[]).map(o => `${o.order_number},${o.customer_name||''},${o.total},${o.payment_status},${o.status},${(o.created_at||'').substring(0,10)}`),
+      '=== ORDERS ===', 'order_number,customer,total,payment,status,date,currency',
+      ...orders.map(o => `${o.order_number},${o.customer_name||''},${o.total},${o.payment_status},${o.status},${(o.created_at||'').substring(0,10)},${o.currency||''}`),
       '\n=== CONTACTS ===', 'name,phone,segment,orders,spent',
-      ...(contacts||[]).map(c => `${c.name||''},${c.phone},${c.segment||''},${c.total_orders||0},${c.total_spent||0}`),
+      ...contacts.map(c => `${c.name||''},${c.phone},${c.segment||''},${c.total_orders||0},${c.total_spent||0}`),
+      ...(ordersPage.truncated || contactsPage.truncated
+        ? ['', `# NOTE: export capped at ${ANALYTICS_MAX_ROWS.toLocaleString('en-US')} rows per section — narrow the range before exporting.`]
+        : []),
     ].join('\n');
     res.setHeader('Content-Type','text/csv');
     res.setHeader('Content-Disposition','attachment; filename="zapit-analytics.csv"');
@@ -3392,12 +3424,20 @@ app.post('/subscription/reactivate', authenticate, async (req, res) => {
 // GET /subscription/invoices — B-04: append-only ledger first, subscriptions as legacy fallback
 app.get('/subscription/invoices', authenticate, async (req, res) => {
   try {
-    const { data:tx } = await supabase.from('transactions')
-      .select('id,paystack_reference,plan,billing_cycle,amount_paid,currency,status,created_at')
-      .eq('user_id',req.user.id).order('created_at',{ ascending:false }).limit(100);
-    if (tx?.length) return res.json({ success:true, data:tx });
-    const { data } = await supabase.from('subscriptions').select('id,plan,status,amount_paid,currency,billing_cycle,starts_at,expires_at,paystack_reference').eq('user_id',req.user.id).order('created_at',{ ascending:false });
-    return res.json({ success:true, data:data||[] });
+    // D-05: paginated + exact count; the legacy fallback used to be capped at 1,000
+    // rows with no way to tell that older invoices existed.
+    const pg = parsePagination({ page:req.query.page, limit:req.query.limit }, { page:1, limit:20, maxLimit:100 });
+    const from = (pg.page - 1) * pg.limit, to = from + pg.limit - 1;
+    const ledger = await supabase.from('transactions')
+      .select('id,paystack_reference,plan,billing_cycle,amount_paid,currency,status,created_at', { count:'exact' })
+      .eq('user_id',req.user.id).order('created_at',{ ascending:false }).range(from, to);
+    if (ledger.data?.length) {
+      return res.json({ success:true, data:ledger.data, meta:{ total:ledger.count ?? ledger.data.length, page:pg.page, limit:pg.limit, has_more:(ledger.count ?? 0) > to + 1 } });
+    }
+    const legacy = await supabase.from('subscriptions')
+      .select('id,plan,status,amount_paid,currency,billing_cycle,starts_at,expires_at,paystack_reference', { count:'exact' })
+      .eq('user_id',req.user.id).order('created_at',{ ascending:false }).range(from, to);
+    return res.json({ success:true, data:legacy.data||[], meta:{ total:legacy.count ?? (legacy.data||[]).length, page:pg.page, limit:pg.limit, has_more:(legacy.count ?? 0) > to + 1 } });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch invoices.' }); }
 });
 
@@ -3441,8 +3481,11 @@ app.post('/referrals/apply', authenticate, async (req, res) => {
 // GET /referrals/history
 app.get('/referrals/history', authenticate, async (req, res) => {
   try {
-    const { data } = await supabase.from('referrals').select('*,users!referred_id(email,full_name,created_at)').eq('referrer_id',req.user.id).order('created_at',{ ascending:false });
-    return res.json({ success:true, data:data||[] });
+    // D-05: the referral list was an unbounded read (PostgREST caps it at 1,000).
+    const pg = parsePagination({ page:req.query.page, limit:req.query.limit }, { page:1, limit:20, maxLimit:100 });
+    const from = (pg.page - 1) * pg.limit, to = from + pg.limit - 1;
+    const { data, count } = await supabase.from('referrals').select('*,users!referred_id(email,full_name,created_at)', { count:'exact' }).eq('referrer_id',req.user.id).order('created_at',{ ascending:false }).range(from, to);
+    return res.json({ success:true, data:data||[], meta:{ total:count ?? (data||[]).length, page:pg.page, limit:pg.limit, has_more:(count ?? 0) > to + 1 } });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch referral history.' }); }
 });
 
@@ -3661,15 +3704,29 @@ app.get('/admin/platform-stats', authenticate, adminLimiter, requireAdmin, async
 app.get('/admin/revenue', authenticate, adminLimiter, requireAdmin, async (req, res) => {
   try {
     // B-04: append-only transactions are the revenue source of truth; subscriptions legacy fallback.
-    const [{ data:subs },{ data:tx }] = await Promise.all([
-      supabase.from('subscriptions').select('plan,amount_paid,currency').eq('status','active').neq('plan','free'),
-      supabase.from('transactions').select('plan,amount_paid,currency').eq('status','success'),
+    // D-05: both aggregates were computed from one capped page (1,000 rows) before.
+    const [ledger, subsPage] = await Promise.all([
+      ledgerTotals(supabase),
+      fetchAllRows(() => supabase.from('subscriptions').select('plan,amount_paid,currency').eq('status','active').neq('plan','free')),
     ]);
-    const byPlan = {};
-    let total = 0;
-    const source = tx?.length ? tx : (subs||[]);
-    source.forEach(s => { byPlan[s.plan]=(byPlan[s.plan]||0)+(s.amount_paid||0); total+=(s.amount_paid||0); });
-    return res.json({ success:true, data:{ total_revenue:total, total_mrr: tx?.length ? undefined : total, by_plan:byPlan, subscriber_count:(subs||[]).length, ledger:'transactions', ledger_rows:(tx||[]).length } });
+    if (subsPage.error) throw subsPage.error;
+    let byPlan, byCurrency, total, ledgerRows, source;
+    if (ledger.rows > 0) {
+      ({ byPlan, byCurrency, total, rows:ledgerRows, source } = ledger);
+    } else {
+      // Pre-ledger deployments: aggregate the active subscriptions instead.
+      byPlan = {}; byCurrency = {}; total = 0;
+      for (const sub of subsPage.rows) {
+        const amount = Number(sub.amount_paid) || 0;
+        const cur    = String(sub.currency || 'NGN').toUpperCase();
+        byPlan[sub.plan || 'unknown'] = (byPlan[sub.plan || 'unknown'] || 0) + amount;
+        byCurrency[cur] = (byCurrency[cur] || 0) + amount;
+        total += amount;
+      }
+      ledgerRows = subsPage.rows.length;
+      source = 'paged';
+    }
+    return res.json({ success:true, data:{ total_revenue:total, total_mrr: ledger.rows > 0 ? undefined : total, by_plan:byPlan, by_currency:byCurrency, mixed_currency:Object.keys(byCurrency).length>1, subscriber_count:subsPage.rows.length, ledger: ledger.rows > 0 ? 'transactions' : 'subscriptions', ledger_rows:ledgerRows, source, truncated:Boolean(ledger.truncated||subsPage.truncated) } });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch revenue.' }); }
 });
 
