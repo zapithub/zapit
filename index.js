@@ -19,6 +19,10 @@ import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { PLAN_LIMITS as __SRC_PLAN_LIMITS, getPricingForLocation as __srcGetPricing, formatPrice as __srcFormat } from './src/config/plans.js';
+import { subscriptionCache } from './src/utils/cache.js';
+import { withAdvisoryLock } from './src/utils/distributedLock.js';
+import { parsePagination } from './src/utils/validation.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -97,48 +101,10 @@ if (!SUPABASE_URL || SUPABASE_URL.includes('placeholder')) {
 }
 
 // ─── PLAN LIMITS ────────────────────────────────────────────────
-const PLAN_LIMITS = {
-  free: {
-    whatsapp_replies: 100, whatsapp_broadcasts: 0, whatsapp_contacts: 100,
-    products_limit: 5, knowledge_base_limit: 20,
-    video_generations: 3, image_generations: 5, text_posts: 10,
-    scheduled_posts_limit: 10, schedule_days_ahead: 7, max_social_platforms: 2,
-    ai_video_enabled: false, ai_image_enabled: true, analytics_enabled: false,
-    brand_voice_enabled: false, excel_import_enabled: false,
-    priority_support: false, remove_watermark: false, white_label: false,
-    price: { NGN: 0, GHS: 0, KES: 0, ZAR: 0, USD: 0 },
-  },
-  creator: {
-    whatsapp_replies: 1000, whatsapp_broadcasts: 200, whatsapp_contacts: 1000,
-    products_limit: 30, knowledge_base_limit: 100,
-    video_generations: 30, image_generations: 60, text_posts: 100,
-    scheduled_posts_limit: 50, schedule_days_ahead: 15, max_social_platforms: 4,
-    ai_video_enabled: true, ai_image_enabled: true, analytics_enabled: true,
-    brand_voice_enabled: true, excel_import_enabled: false,
-    priority_support: false, remove_watermark: true, white_label: false,
-    price: { NGN: 10000, GHS: 150, KES: 1500, ZAR: 220, USD: 12 },
-  },
-  growth: {
-    whatsapp_replies: 5000, whatsapp_broadcasts: 1000, whatsapp_contacts: 5000,
-    products_limit: 150, knowledge_base_limit: 500,
-    video_generations: 100, image_generations: 200, text_posts: 300,
-    scheduled_posts_limit: 150, schedule_days_ahead: 30, max_social_platforms: 6,
-    ai_video_enabled: true, ai_image_enabled: true, analytics_enabled: true,
-    brand_voice_enabled: true, excel_import_enabled: true,
-    priority_support: true, remove_watermark: true, white_label: false,
-    price: { NGN: 25000, GHS: 375, KES: 3750, ZAR: 550, USD: 30 },
-  },
-  agency: {
-    whatsapp_replies: 99999, whatsapp_broadcasts: 9999, whatsapp_contacts: 99999,
-    products_limit: 9999, knowledge_base_limit: 9999,
-    video_generations: 500, image_generations: 1000, text_posts: 1000,
-    scheduled_posts_limit: 500, schedule_days_ahead: 30, max_social_platforms: 7,
-    ai_video_enabled: true, ai_image_enabled: true, analytics_enabled: true,
-    brand_voice_enabled: true, excel_import_enabled: true,
-    priority_support: true, remove_watermark: true, white_label: true,
-    price: { NGN: 50000, GHS: 750, KES: 7500, ZAR: 1100, USD: 60 },
-  },
-};
+// Source of truth is src/config/plans.js — this inline copy is kept for backward compat
+// during Phase 2 migration. Run: node scripts/generate-pricing.mjs to keep public/pricing.json in sync.
+// Future Phase 2 will remove this block and use import directly. Do not edit prices here.
+const PLAN_LIMITS = __SRC_PLAN_LIMITS; // Phase 2: single source
 
 // ─── EXPRESS SETUP ──────────────────────────────────────────────
 const app = express();
@@ -241,6 +207,8 @@ app.use(globalLimiter);
 app.use(requestLogger);
 
 // ─── ENCRYPTION ─────────────────────────────────────────────────
+// Note: scryptSync runs once at boot only; acceptable for startup. Phase 5 may move to async scrypt with warm cache.
+// 32-byte key derivation with static salt is reused for all encrypt/decrypt; rotation requires re-encrypt.
 const __encKeyForCipher = __effectiveEncKey || 'zapit-32-char-fallback-dev-only-key!!'.slice(0,32);
 const CIPHER_KEY = crypto.scryptSync(__encKeyForCipher, 'zapit-salt-v3', 32);
 
@@ -377,6 +345,9 @@ async function requireAdmin(req, res, next) {
 
 // ─── HELPERS ────────────────────────────────────────────────────
 async function getUserSubscription(userId) {
+  // Phase 2 cache: 60s LRU, invalidated on paystack webhook / admin set-plan
+  const cached = subscriptionCache.get(userId);
+  if (cached) return cached;
   const { data } = await supabase
     .from('subscriptions')
     .select('*')
@@ -386,8 +357,11 @@ async function getUserSubscription(userId) {
     .limit(1)
     .single();
   const plan = data?.plan || 'free';
-  return { subscription: data, plan, limits: PLAN_LIMITS[plan] || PLAN_LIMITS.free };
+  const result = { subscription: data, plan, limits: PLAN_LIMITS[plan] || PLAN_LIMITS.free };
+  subscriptionCache.set(userId, result);
+  return result;
 }
+function invalidateSubscriptionCache(userId) { if (userId) subscriptionCache.del(userId); }
 
 // ─── EMAIL (BREVO) ───────────────────────────────────────────────
 async function sendEmail({ to, toName, subject, htmlContent }) {
@@ -1693,12 +1667,13 @@ app.get('/whatsapp/products/export', authenticate, async (req, res) => {
 // GET /whatsapp/orders
 app.get('/whatsapp/orders', authenticate, async (req, res) => {
   try {
-    const { page=1, limit=20, status, payment_status, search } = req.query;
-    const offset = (Number(page)-1)*Number(limit);
-    let q = supabase.from('orders').select('*',{ count:'exact' }).eq('user_id',req.user.id).range(offset,offset+Number(limit)-1).order('created_at',{ ascending:false });
-    if (status)         q = q.eq('status',status);
-    if (payment_status) q = q.eq('payment_status',payment_status);
-    if (search)         q = q.or(`customer_name.ilike.%${search}%,customer_phone.ilike.%${search}%,order_number.ilike.%${search}%`);
+    let { page=1, limit=20, status, payment_status, search } = req.query;
+    const pg = parsePagination({ page, limit }, { page:1, limit:20, maxLimit:100 });
+    page = pg.page; limit = pg.limit; const offset = pg.offset;
+    let q = supabase.from('orders').select('*',{ count:'exact' }).eq('user_id',req.user.id).range(offset,offset+limit-1).order('created_at',{ ascending:false });
+    if (status)         q = q.eq('status', sanitizeStr(String(status),20));
+    if (payment_status) q = q.eq('payment_status', sanitizeStr(String(payment_status),20));
+    if (search)         { const safe = sanitizeStr(String(search), 60).replace(/[%_]/g, ''); if (safe) q = q.or(`customer_name.ilike.%${safe}%,customer_phone.ilike.%${safe}%,order_number.ilike.%${safe}%`); }
     const { data, count, error } = await q;
     if (error) throw error;
     return res.json({ success:true, data, meta:{ total:count, page:Number(page), limit:Number(limit), pages:Math.ceil((count||0)/Number(limit)) } });
@@ -1775,14 +1750,15 @@ app.delete('/whatsapp/orders/:id', authenticate, async (req, res) => {
 // GET /whatsapp/contacts
 app.get('/whatsapp/contacts', authenticate, async (req, res) => {
   try {
-    const { page=1, limit=20, search, segment } = req.query;
-    const offset = (Number(page)-1)*Number(limit);
-    let q = supabase.from('contacts').select('*',{ count:'exact' }).eq('user_id',req.user.id).range(offset,offset+Number(limit)-1).order('last_message_date',{ ascending:false });
-    if (search)  q = q.or(`name.ilike.%${search}%,phone.ilike.%${search}%`);
-    if (segment) q = q.eq('segment',segment);
+    let { page=1, limit=20, search, segment } = req.query;
+    const pg = parsePagination({ page, limit }, { page:1, limit:20, maxLimit:100 });
+    page = pg.page; limit = pg.limit; const offset = pg.offset;
+    let q = supabase.from('contacts').select('*',{ count:'exact' }).eq('user_id',req.user.id).range(offset,offset+limit-1).order('last_message_date',{ ascending:false });
+    if (search)  { const safe = sanitizeStr(String(search), 60).replace(/[%_]/g, ''); if (safe) q = q.or(`name.ilike.%${safe}%,phone.ilike.%${safe}%`); }
+    if (segment) q = q.eq('segment', sanitizeStr(String(segment),20));
     const { data, count, error } = await q;
     if (error) throw error;
-    return res.json({ success:true, data, meta:{ total:count, page:Number(page), limit:Number(limit) } });
+    return res.json({ success:true, data, meta:{ total:count, page, limit } });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch contacts.' }); }
 });
 
@@ -2300,11 +2276,12 @@ app.post('/content/regenerate/:id', authenticate, contentLimiter, async (req, re
 // GET /content/library
 app.get('/content/library', authenticate, async (req, res) => {
   try {
-    const { page=1, limit=20, type, status } = req.query;
-    const offset = (Number(page)-1)*Number(limit);
-    let q = supabase.from('content_items').select('*',{ count:'exact' }).eq('user_id',req.user.id).range(offset,offset+Number(limit)-1).order('created_at',{ ascending:false });
-    if (type)   q = q.eq('type',type);
-    if (status) q = q.eq('generation_status',status);
+    let { page=1, limit=20, type, status } = req.query;
+    const pg = parsePagination({ page, limit }, { page:1, limit:20, maxLimit:100 });
+    page = pg.page; limit = pg.limit; const offset = pg.offset;
+    let q = supabase.from('content_items').select('*',{ count:'exact' }).eq('user_id',req.user.id).range(offset,offset+limit-1).order('created_at',{ ascending:false });
+    if (type)   q = q.eq('type', sanitizeStr(String(type),20));
+    if (status) q = q.eq('generation_status', sanitizeStr(String(status),20));
     const { data, count, error } = await q;
     if (error) throw error;
     return res.json({ success:true, data:data||[], meta:{ total:count, page:Number(page), limit:Number(limit) } });
@@ -2420,8 +2397,12 @@ app.post('/content/schedule/bulk', authenticate, async (req, res) => {
 // GET /content/scheduled
 app.get('/content/scheduled', authenticate, async (req, res) => {
   try {
-    const { data } = await supabase.from('posts').select('*,content_items(topic,type,image_url,video_url,thumbnail_url)').eq('user_id',req.user.id).in('status',['scheduled','posting']).order('scheduled_for',{ ascending:true });
-    return res.json({ success:true, data:data||[] });
+    let { page=1, limit=20 } = req.query;
+    const pg = parsePagination({ page, limit }, { page:1, limit:20, maxLimit:100 });
+    page = pg.page; limit = pg.limit; const offset = pg.offset;
+    const { data, count, error } = await supabase.from('posts').select('*,content_items(topic,type,image_url,video_url,thumbnail_url)', { count:'exact' }).eq('user_id',req.user.id).in('status',['scheduled','posting']).range(offset, offset+limit-1).order('scheduled_for',{ ascending:true });
+    if (error) throw error;
+    return res.json({ success:true, data:data||[], pagination:{ page, limit, total: count||0 } });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch scheduled posts.' }); }
 });
 
@@ -2969,7 +2950,7 @@ app.get('/admin/users', authenticate, adminLimiter, requireAdmin, async (req, re
     if (search) q = q.or(`email.ilike.%${search}%,username.ilike.%${search}%,full_name.ilike.%${search}%`);
     const { data, count, error } = await q;
     if (error) throw error;
-    return res.json({ success:true, data, meta:{ total:count, page:Number(page), limit:Number(limit) } });
+    return res.json({ success:true, data, meta:{ total:count, page, limit } });
   } catch { return res.status(500).json({ success:false, error:'Failed to fetch users.' }); }
 });
 
@@ -2991,6 +2972,7 @@ app.post('/admin/users/:id/set-plan', authenticate, adminLimiter, requireAdmin, 
   try {
     const { plan, expires_in_days=30 } = req.body;
     if (!PLAN_LIMITS[plan]) return res.status(400).json({ success:false, error:'Invalid plan.' });
+    invalidateSubscriptionCache(req.params.id);
     await supabase.from('subscriptions').upsert({ user_id:req.params.id, plan, status:'active', billing_cycle:'admin_override', amount_paid:0, starts_at:new Date().toISOString(), expires_at:new Date(Date.now()+Number(expires_in_days)*24*60*60*1000).toISOString() },{ onConflict:'user_id' });
     return res.json({ success:true, message:`User plan set to ${plan} for ${expires_in_days} days.` });
   } catch { return res.status(500).json({ success:false, error:'Failed to set plan.' }); }
@@ -3119,6 +3101,7 @@ app.post('/webhook/paystack', webhookLimiter, async (req, res) => {
 
       const amountPaid = amount/100;
       const days       = cycle==='annual' ? 365 : 30;
+      invalidateSubscriptionCache(userId);
       await supabase.from('subscriptions').upsert({ user_id:userId, plan, status:'active', billing_cycle:cycle, amount_paid:amountPaid, currency, paystack_reference:reference, starts_at:new Date().toISOString(), expires_at:new Date(Date.now()+days*24*60*60*1000).toISOString(), next_billing_date:new Date(Date.now()+days*24*60*60*1000).toISOString(), auto_renew:true },{ onConflict:'user_id' });
 
       const { data:user } = await supabase.from('users').select('email,full_name').eq('id',userId).single();
@@ -3229,8 +3212,9 @@ app.use((err, req, res, _next) => {
 // ─── CRON JOBS ───────────────────────────────────────────────
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-// Publish due scheduled posts — every 5 minutes
+// Publish due scheduled posts — every 5 minutes (with distributed lock)
 cron.schedule('*/5 * * * *', async () => {
+  const { executed } = await withAdvisoryLock(supabase, 'cron:publish-due-posts', async () => {
   try {
     const now            = new Date().toISOString();
     const fiveMinutesAgo = new Date(Date.now()-5*60*1000).toISOString();
@@ -3249,6 +3233,8 @@ cron.schedule('*/5 * * * *', async () => {
       await supabase.from('posts').update(updateData).eq('id',post.id);
     }
   } catch (err) { console.error('[CRON publish]', err.message); }
+  });
+  if (!executed) console.log('[CRON publish] skipped (locked)');
 });
 
 // Reset monthly WhatsApp reply counts — 1st of every month at midnight
@@ -3259,8 +3245,9 @@ cron.schedule('0 0 1 * *', async () => {
   } catch (err) { console.error('[CRON reset counts]', err.message); }
 });
 
-// Expire subscriptions — daily at 2am
+// Expire subscriptions — daily at 2am (with lock)
 cron.schedule('0 2 * * *', async () => {
+  const { executed } = await withAdvisoryLock(supabase, 'cron:expire-subs', async () => {
   try {
     const { data:expired } = await supabase.from('subscriptions')
       .select('id,user_id,plan')
@@ -3281,10 +3268,13 @@ cron.schedule('0 2 * * *', async () => {
     }
     console.log(`[CRON] Expired ${expired.length} subscription(s).`);
   } catch (err) { console.error('[CRON expire subs]', err.message); }
+  });
+  if (!executed) console.log('[CRON expire] skipped (locked)');
 });
 
-// Process content calendar automations — every hour
+// Process content calendar automations — every hour (with lock)
 cron.schedule('0 * * * *', async () => {
+  const { executed } = await withAdvisoryLock(supabase, 'cron:calendar', async () => {
   try {
     const now = new Date();
     const { data:automations } = await supabase.from('content_calendar').select('*').eq('is_active',true).lte('next_generation_at', now.toISOString());
@@ -3308,6 +3298,8 @@ cron.schedule('0 * * * *', async () => {
       } catch (e) { console.error(`[CRON calendar] automation ${auto.id}:`, e.message); }
     }
   } catch (err) { console.error('[CRON calendar]', err.message); }
+  });
+  if (!executed) console.log('[CRON calendar] skipped (locked)');
 });
 
 // ─── START SERVER ────────────────────────────────────────────

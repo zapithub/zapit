@@ -12,7 +12,9 @@
     "dev": "node --watch index.js",
     "check": "node --input-type=module --check < index.js",
     "security:check": "node scripts/security-check.mjs",
-    "test:phase1": "node scripts/security-check.mjs && node --input-type=module --check < index.js && echo 'Phase 1 smoke OK'"
+    "test:phase1": "node scripts/security-check.mjs && node --input-type=module --check < index.js && echo 'Phase 1 smoke OK'",
+    "generate:pricing": "node scripts/generate-pricing.mjs",
+    "test:phase2": "node scripts/generate-pricing.mjs && node --input-type=module --check < index.js && node scripts/security-check.mjs && echo 'Phase 2 smoke OK'"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",

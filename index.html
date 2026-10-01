@@ -7,6 +7,8 @@
 <meta name="theme-color" content="#6366F1">
 <title>ZAPIT — Your AI Sales Rep + Viral Content Machine</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%236366F1'/%3E%3Cpath d='M55 18 L30 56 H47 L43 82 L72 42 H53 Z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="public/shared.css">
+<meta name="zapit-api" content="https://zapit-n2yf.onrender.com">
 
 <style>
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1270,9 +1272,11 @@ h4, .h4 { font-size: var(--font-size-h4); line-height: var(--line-height-h4); fo
      DYNAMIC PRICING SYSTEM
      ════════════════════════════════════════════════════════ */
 
-  // Point this at your deployed ZAPIT backend (e.g. https://zapit-api.onrender.com).
-  // Leave blank to rely entirely on client-side location detection + built-in pricing table.
-  var ZAPIT_API_BASE = 'https://zapit-n2yf.onrender.com';
+  // Backend base for pricing — override via window.ZAPIT_API_BASE or <meta name="zapit-api" content="https://...">
+  // If your frontend and backend share the same origin, this auto-detects via location.origin.
+  // Hardcoded fallback is kept for backwards compat but can be removed once public/pricing.json is generated.
+  var _metaApi = document.querySelector('meta[name="zapit-api"]');
+  var ZAPIT_API_BASE = window.ZAPIT_API_BASE || (_metaApi && _metaApi.content) || (location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? 'https://zapit-n2yf.onrender.com' : '') || 'https://zapit-n2yf.onrender.com';
 
   var CURRENCY_SYMBOLS = { NGN: '₦', GHS: 'GH₵', KES: 'KSh', ZAR: 'R', USD: '$', GBP: '£', EUR: '€' };
   var COUNTRY_CURRENCY = { NG: 'NGN', GH: 'GHS', KE: 'KES', ZA: 'ZAR', US: 'USD', GB: 'GBP', CA: 'USD', AU: 'USD', DE: 'EUR', FR: 'EUR', NL: 'EUR' };
@@ -1400,7 +1404,43 @@ h4, .h4 { font-size: var(--font-size-h4); line-height: var(--line-height-h4); fo
       });
   }
 
-  // 2. Fall back to direct client-side IP geolocation + built-in pricing table
+  // 2. Try static pricing.json (generated from src/config/plans.js) — works offline, no ipapi needed
+  function loadFromStaticPricing() {
+    return fetch('public/pricing.json')
+      .then(function (res) { if (!res.ok) throw new Error('Static pricing not found'); return res.json(); })
+      .then(function (all) {
+        return fetch('https://ipapi.co/json/').then(function(r){ return r.ok ? r.json() : {}; }).catch(function(){ return {}; })
+          .then(function (geo) {
+            var code = geo && geo.country_code;
+            var currency = COUNTRY_CURRENCY[code] || 'NGN';
+            var countryName = (code && COUNTRY_NAMES[code]) || (geo && geo.country_name) || 'Nigeria';
+            // If static pricing has this currency, use it
+            var entry = all[currency] || all['NGN'];
+            if (entry && entry.plans) {
+              setLocationText(entry.location.country_name || countryName, entry.location.currency || currency);
+              var plans = {};
+              PLAN_ORDER.forEach(function (key) {
+                var p = entry.plans[key];
+                plans[key] = {
+                  whatsapp_replies: p.whatsapp_replies,
+                  video_generations: p.video_generations,
+                  max_social_platforms: p.max_social_platforms,
+                  products_limit: p.products_limit,
+                  analytics_enabled: p.analytics_enabled,
+                  price_raw: p.price_raw,
+                  price_annual: p.price_annual,
+                  currency_symbol: p.currency_symbol
+                };
+              });
+              renderPricingCards(plans);
+              return true;
+            }
+            throw new Error('No static pricing for ' + currency);
+          });
+      });
+  }
+
+  // 3. Fall back to direct client-side IP geolocation + built-in pricing table
   function loadFromClientGeo() {
     return fetch('https://ipapi.co/json/')
       .then(function (res) {
@@ -1417,9 +1457,10 @@ h4, .h4 { font-size: var(--font-size-h4); line-height: var(--line-height-h4); fo
       });
   }
 
-  // 3. Final fallback — default to Nigeria/NGN so the section is never empty
+  // 4. Final fallback — default to Nigeria/NGN so the section is never empty
   function loadPricing() {
     loadFromBackend()
+      .catch(function () { return loadFromStaticPricing(); })
       .catch(function () { return loadFromClientGeo(); })
       .catch(function () { renderDefaultNigeria(); });
   }
